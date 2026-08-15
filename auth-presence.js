@@ -1,4 +1,3 @@
-
 import { db } from './firebase-config.js';
 import { ref, set, onValue, remove, get, onDisconnect, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
@@ -131,7 +130,6 @@ export function verifyAndLogin(username, password, callback) {
             setCurrentUser(username);
             console.log(`Login successful. Welcome user: ${username}`);
             initPresenceSystem((msg) => {
-                // Handle forced sign out from concurrent login callback if registered externally
                 window.location.reload();
             });
             callback(true, "");
