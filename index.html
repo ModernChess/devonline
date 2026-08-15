@@ -45,20 +45,25 @@
             z-index: 1000;
         }
 
-        /* Active Online Status Bar at Top */
-        .online-status-bar {
+        /* Roblox-style Active Players Sidebar / List Drawer */
+        .roblox-players-bar {
             width: 100%;
             max-width: 400px;
             background: var(--surface-color);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 8px 12px;
+            padding: 10px;
             margin-bottom: 12px;
+            box-sizing: border-box;
+        }
+
+        .roblox-bar-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            box-sizing: border-box;
             font-size: 0.8rem;
+            font-weight: bold;
+            margin-bottom: 6px;
         }
 
         .online-indicator {
@@ -79,6 +84,34 @@
         .status-dot.active-multiple {
             background-color: var(--primary);
             box-shadow: 0 0 8px var(--primary);
+        }
+
+        .roblox-players-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 90px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border-color);
+            padding-top: 6px;
+        }
+
+        .roblox-player-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--surface-alt);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        .player-badge-online {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--primary);
+            box-shadow: 0 0 4px var(--primary);
         }
 
         /* Screen containers */
@@ -356,15 +389,20 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.2-fix</div>
+    <div class="version-badge">devonline v1.4-warn</div>
 
-    <!-- Active Online Players Status Bar -->
-    <div class="online-status-bar" id="onlineStatusBar">
-        <div class="online-indicator">
-            <div class="status-dot" id="statusDot"></div>
-            <span id="onlineCountText">Active Online: 0 players</span>
+    <!-- Roblox-Style Active Players List Sidebar Drawer -->
+    <div class="roblox-players-bar" id="robloxBar">
+        <div class="roblox-bar-header">
+            <div class="online-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="onlineCountText">Active Players (0)</span>
+            </div>
+            <span style="color:var(--secondary); font-size:0.7rem;">Roblox List ▲</span>
         </div>
-        <span id="activeUserNames" style="color:var(--text-muted); font-size:0.75rem;">None</span>
+        <div class="roblox-players-list" id="robloxPlayersList">
+            <div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>
+        </div>
     </div>
 
     <!-- 1. LOGIN SCREEN -->
@@ -504,11 +542,9 @@
         }
 
         let currentUser = localStorage.getItem('devOnlineUser') || null;
-        let currentServerId = null;
-        let myTeam = null;
+        let currentServerId = localStorage.getItem('devOnlineServer') || null;
+        let myTeam = localStorage.getItem('devOnlineTeam') || null;
         let presenceRef = null;
-        let matchUnsubscribe = null;
-        let chatUnsubscribe = null;
 
         const screens = {
             login: document.getElementById('login-screen'),
@@ -523,26 +559,33 @@
             screens[name].classList.add('active');
         }
 
-        // Global Online Presence System Tracker
+        // Browser Reload / Close Prevention Warning Hook
+        window.addEventListener('beforeunload', (e) => {
+            if (currentServerId) {
+                // Standard browser prompt warning user that leaving/reloading might affect match status
+                e.preventDefault();
+                e.returnValue = "You are currently in an active match! Reloading or leaving may interrupt your game session.";
+                return e.returnValue;
+            }
+        });
+
+        // Roblox-Style Player List & Presence System Tracker
         function initPresenceSystem() {
             if (!currentUser) return;
             presenceRef = ref(db, `presence/${currentUser}`);
             
-            // Set user online and register disconnect auto-removal
             set(presenceRef, {
                 online: true,
                 lastSeen: serverTimestamp()
             });
             onDisconnect(presenceRef).remove();
 
-            // Heartbeat update every 15s to prevent AFK stale drops
             setInterval(() => {
                 if(currentUser) {
                     set(presenceRef, { online: true, lastSeen: serverTimestamp() });
                 }
-            }, 15000);
+            }, 12000);
 
-            // Listen to global presence list
             onValue(ref(db, 'presence'), (snapshot) => {
                 const data = snapshot.val() || {};
                 const activeUsers = Object.keys(data);
@@ -550,10 +593,21 @@
 
                 const dotEl = document.getElementById('statusDot');
                 const countTextEl = document.getElementById('onlineCountText');
-                const namesEl = document.getElementById('activeUserNames');
+                const listEl = document.getElementById('robloxPlayersList');
 
-                countTextEl.textContent = `Active Online: ${count} player${count === 1 ? '' : 's'}`;
-                namesEl.textContent = count > 0 ? activeUsers.join(', ') : 'None';
+                countTextEl.textContent = `Active Players (${count})`;
+                listEl.innerHTML = '';
+
+                if (count === 0) {
+                    listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>';
+                } else {
+                    activeUsers.forEach(uname => {
+                        const card = document.createElement('div');
+                        card.className = 'roblox-player-card';
+                        card.innerHTML = `<span>👤 <b>${uname}</b> ${uname === currentUser ? '(You)' : ''}</span><div class="player-badge-online"></div>`;
+                        listEl.appendChild(card);
+                    });
+                }
 
                 if (count > 1) {
                     dotEl.classList.add('active-multiple');
@@ -577,7 +631,7 @@
                 err.textContent = '';
                 console.log(`Login successful. Welcome user: ${currentUser}`);
                 initPresenceSystem();
-                initLobby();
+                checkExistingMatchReconnection();
             } else {
                 err.textContent = "Invalid account credentials!";
                 console.warn(`Login failed for username: "${u}"`);
@@ -594,19 +648,45 @@
                 remove(presenceRef);
             }
             if (currentServerId) {
-                // Remove server or mark ended if leaving game
                 remove(ref(db, `servers/${currentServerId}`));
                 currentServerId = null;
+                localStorage.removeItem('devOnlineServer');
+                localStorage.removeItem('devOnlineTeam');
             }
             localStorage.removeItem('devOnlineUser');
             currentUser = null;
             switchScreen('login');
         }
 
+        function checkExistingMatchReconnection() {
+            if (!currentServerId) {
+                initLobby();
+                return;
+            }
+
+            console.log(`Checking if previous server room ${currentServerId} still exists for reconnection...`);
+            get(ref(db, `servers/${currentServerId}`)).then(snapshot => {
+                const srv = snapshot.val();
+                if (srv && srv.status === 'playing' && (srv.host === currentUser || srv.guest === currentUser)) {
+                    console.log(`Reconnection successful! Restoring session to match ID: ${currentServerId}`);
+                    switchScreen('game');
+                    startCanvasGame();
+                } else {
+                    console.log("Previous match no longer active. Entering lobby.");
+                    currentServerId = null;
+                    localStorage.removeItem('devOnlineServer');
+                    localStorage.removeItem('devOnlineTeam');
+                    initLobby();
+                }
+            }).catch(() => {
+                initLobby();
+            });
+        }
+
         if(currentUser) {
             console.log(`Found active session in localStorage for user: ${currentUser}`);
             initPresenceSystem();
-            initLobby();
+            checkExistingMatchReconnection();
         }
 
         function initLobby() {
@@ -651,6 +731,9 @@
             currentServerId = newSrvRef.key;
             myTeam = 'blue';
 
+            localStorage.setItem('devOnlineServer', currentServerId);
+            localStorage.setItem('devOnlineTeam', myTeam);
+
             const initialUnits = [
                 { id: 'b1', team: 'blue', type: 'tank', x: 1, y: 7 },
                 { id: 'b2', team: 'blue', type: 'infantry', x: 3, y: 7 },
@@ -681,6 +764,8 @@
                 console.log(`Cancelling server room ${currentServerId}`);
                 remove(ref(db, `servers/${currentServerId}`));
                 currentServerId = null;
+                localStorage.removeItem('devOnlineServer');
+                localStorage.removeItem('devOnlineTeam');
             }
             switchScreen('lobby');
         });
@@ -688,6 +773,10 @@
         function joinServer(srvId) {
             currentServerId = srvId;
             myTeam = 'red';
+
+            localStorage.setItem('devOnlineServer', currentServerId);
+            localStorage.setItem('devOnlineTeam', myTeam);
+
             console.log(`User ${currentUser} joining server ${srvId} as Red Team guest.`);
 
             update(ref(db, `servers/${srvId}`), {
@@ -722,18 +811,13 @@
         function triggerMatchEnd(reason) {
             console.log(`Match termination triggered: ${reason}`);
             if (currentServerId) {
-                // Update server status to ended or delete room so other player gets notified
-                update(ref(db, `servers/${currentServerId}`), {
-                    status: 'ended',
-                    endedBy: currentUser,
-                    reason: reason
-                }).then(() => {
-                    remove(ref(db, `servers/${currentServerId}`));
-                }).catch(() => {});
+                remove(ref(db, `servers/${currentServerId}`));
                 currentServerId = null;
+                localStorage.removeItem('devOnlineServer');
+                localStorage.removeItem('devOnlineTeam');
             }
             alert(reason);
-            switchScreen('lobby');
+            initLobby();
         }
 
         // Canvas Game Logic & Realtime Listeners
@@ -746,11 +830,10 @@
 
             const srvRef = ref(db, `servers/${currentServerId}`);
             
-            // Listen to game match updates
-            matchUnsubscribe = onValue(srvRef, (snapshot) => {
+            onValue(srvRef, (snapshot) => {
                 const match = snapshot.val();
                 if(!match) {
-                    triggerMatchEnd("Opponent disconnected or left the match!");
+                    console.warn("Match data missing or room deleted.");
                     return;
                 }
 
@@ -758,27 +841,15 @@
                     console.warn("Match ended by server notice.");
                     alert(match.reason || "Match ended!");
                     currentServerId = null;
-                    switchScreen('lobby');
+                    localStorage.removeItem('devOnlineServer');
+                    localStorage.removeItem('devOnlineTeam');
+                    initLobby();
                     return;
-                }
-
-                // Check if host or guest left/went offline from presence tracking
-                if (match.host && match.guest) {
-                    get(ref(db, 'presence')).then(presSnap => {
-                        const presData = presSnap.val() || {};
-                        const hostOnline = presData[match.host] && presData[match.host].online;
-                        const guestOnline = presData[match.guest] && presData[match.guest].online;
-                        if (!hostOnline || !guestOnline) {
-                            console.warn("A player went offline or AFK. Ending match.");
-                            triggerMatchEnd("Opponent went offline / AFK!");
-                        }
-                    });
                 }
 
                 renderBoard(match);
             });
 
-            // Setup Chat Listener for this room
             setupMatchChat();
 
             function renderBoard(match) {
@@ -926,10 +997,10 @@
             };
         }
 
-        // Fixed Match Chat Logic
+        // Match Chat Logic
         function setupMatchChat() {
             const chatMessagesEl = document.getElementById('chatMessages');
-            chatMessagesEl.innerHTML = ''; // reset chat view for room
+            chatMessagesEl.innerHTML = '';
 
             const chatRef = ref(db, `servers/${currentServerId}/chat`);
             onValue(chatRef, (snapshot) => {
@@ -955,20 +1026,13 @@
         function sendChatMessage() {
             const input = document.getElementById('chatInput');
             const msg = input.value.trim();
-            if(!msg || !currentServerId) {
-                console.warn("Chat send blocked: Message empty or no active server room.");
-                return;
-            }
+            if(!msg || !currentServerId) return;
 
             console.log(`Sending chat message from ${currentUser}: "${msg}"`);
             const chatRef = ref(db, `servers/${currentServerId}/chat`);
             push(chatRef, {
                 sender: currentUser,
                 text: msg
-            }).then(() => {
-                console.log("Chat message successfully delivered to database.");
-            }).catch(err => {
-                console.error("Failed to push chat message:", err);
             });
             input.value = '';
         }
