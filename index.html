@@ -45,6 +45,42 @@
             z-index: 1000;
         }
 
+        /* Active Online Status Bar at Top */
+        .online-status-bar {
+            width: 100%;
+            max-width: 400px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-sizing: border-box;
+            font-size: 0.8rem;
+        }
+
+        .online-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--danger);
+            box-shadow: 0 0 6px var(--danger);
+            transition: background-color 0.3s, box-shadow 0.3s;
+        }
+
+        .status-dot.active-multiple {
+            background-color: var(--primary);
+            box-shadow: 0 0 8px var(--primary);
+        }
+
         /* Screen containers */
         .screen {
             display: none;
@@ -284,7 +320,7 @@
             margin: 0;
         }
 
-        /* In-page Console Tab (Matching offline version) */
+        /* In-page Console Tab */
         #console-container {
             width: 100%;
             max-width: 400px;
@@ -320,7 +356,16 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.1-console</div>
+    <div class="version-badge">devonline v1.2-fix</div>
+
+    <!-- Active Online Players Status Bar -->
+    <div class="online-status-bar" id="onlineStatusBar">
+        <div class="online-indicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="onlineCountText">Active Online: 0 players</span>
+        </div>
+        <span id="activeUserNames" style="color:var(--text-muted); font-size:0.75rem;">None</span>
+    </div>
 
     <!-- 1. LOGIN SCREEN -->
     <div id="login-screen" class="screen active">
@@ -373,7 +418,7 @@
     <div id="game-screen" class="screen">
         <div class="top-bar">
             <span id="playerTeamBadge" style="font-weight:bold; font-size:0.85rem;"></span>
-            <button class="btn btn-danger" id="surrenderBtn" style="width:auto; padding:4px 8px; font-size:0.75rem; margin:0;">Leave Game</button>
+            <button class="btn btn-danger" id="surrenderBtn" style="width:auto; padding:4px 8px; font-size:0.75rem; margin:0;">Surrender / Leave</button>
         </div>
         
         <div class="status-banner" id="statusBanner">Connecting to match...</div>
@@ -406,9 +451,9 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, push, remove, update, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        import { getDatabase, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-        // Console Tracking Interceptor to mirror browser console logs to on-screen console box
+        // Console Tracking Interceptor
         const consoleLogsEl = document.getElementById('console-logs');
         function logToScreen(type, args) {
             const line = document.createElement('div');
@@ -461,6 +506,9 @@
         let currentUser = localStorage.getItem('devOnlineUser') || null;
         let currentServerId = null;
         let myTeam = null;
+        let presenceRef = null;
+        let matchUnsubscribe = null;
+        let chatUnsubscribe = null;
 
         const screens = {
             login: document.getElementById('login-screen'),
@@ -473,6 +521,46 @@
             console.log(`Switching view to screen: ${name}`);
             Object.values(screens).forEach(el => el.classList.remove('active'));
             screens[name].classList.add('active');
+        }
+
+        // Global Online Presence System Tracker
+        function initPresenceSystem() {
+            if (!currentUser) return;
+            presenceRef = ref(db, `presence/${currentUser}`);
+            
+            // Set user online and register disconnect auto-removal
+            set(presenceRef, {
+                online: true,
+                lastSeen: serverTimestamp()
+            });
+            onDisconnect(presenceRef).remove();
+
+            // Heartbeat update every 15s to prevent AFK stale drops
+            setInterval(() => {
+                if(currentUser) {
+                    set(presenceRef, { online: true, lastSeen: serverTimestamp() });
+                }
+            }, 15000);
+
+            // Listen to global presence list
+            onValue(ref(db, 'presence'), (snapshot) => {
+                const data = snapshot.val() || {};
+                const activeUsers = Object.keys(data);
+                const count = activeUsers.length;
+
+                const dotEl = document.getElementById('statusDot');
+                const countTextEl = document.getElementById('onlineCountText');
+                const namesEl = document.getElementById('activeUserNames');
+
+                countTextEl.textContent = `Active Online: ${count} player${count === 1 ? '' : 's'}`;
+                namesEl.textContent = count > 0 ? activeUsers.join(', ') : 'None';
+
+                if (count > 1) {
+                    dotEl.classList.add('active-multiple');
+                } else {
+                    dotEl.classList.remove('active-multiple');
+                }
+            });
         }
 
         // Login Logic
@@ -488,6 +576,7 @@
                 localStorage.setItem('devOnlineUser', u);
                 err.textContent = '';
                 console.log(`Login successful. Welcome user: ${currentUser}`);
+                initPresenceSystem();
                 initLobby();
             } else {
                 err.textContent = "Invalid account credentials!";
@@ -496,14 +585,27 @@
         });
 
         document.getElementById('logoutBtn').addEventListener('click', () => {
-            console.log(`User ${currentUser} logged out.`);
+            handleLogoutCleanExit();
+        });
+
+        function handleLogoutCleanExit() {
+            console.log(`User ${currentUser} logging out / exiting.`);
+            if (presenceRef) {
+                remove(presenceRef);
+            }
+            if (currentServerId) {
+                // Remove server or mark ended if leaving game
+                remove(ref(db, `servers/${currentServerId}`));
+                currentServerId = null;
+            }
             localStorage.removeItem('devOnlineUser');
             currentUser = null;
             switchScreen('login');
-        });
+        }
 
         if(currentUser) {
             console.log(`Found active session in localStorage for user: ${currentUser}`);
+            initPresenceSystem();
             initLobby();
         }
 
@@ -612,7 +714,29 @@
             });
         }
 
-        // Canvas Game Logic
+        // Surrender / Leave Match Handler
+        document.getElementById('surrenderBtn').addEventListener('click', () => {
+            triggerMatchEnd("You surrendered or left the match.");
+        });
+
+        function triggerMatchEnd(reason) {
+            console.log(`Match termination triggered: ${reason}`);
+            if (currentServerId) {
+                // Update server status to ended or delete room so other player gets notified
+                update(ref(db, `servers/${currentServerId}`), {
+                    status: 'ended',
+                    endedBy: currentUser,
+                    reason: reason
+                }).then(() => {
+                    remove(ref(db, `servers/${currentServerId}`));
+                }).catch(() => {});
+                currentServerId = null;
+            }
+            alert(reason);
+            switchScreen('lobby');
+        }
+
+        // Canvas Game Logic & Realtime Listeners
         function startCanvasGame() {
             console.log("Canvas game loop initialized.");
             const canvas = document.getElementById('gameCanvas');
@@ -622,19 +746,40 @@
 
             const srvRef = ref(db, `servers/${currentServerId}`);
             
-            onValue(srvRef, (snapshot) => {
+            // Listen to game match updates
+            matchUnsubscribe = onValue(srvRef, (snapshot) => {
                 const match = snapshot.val();
-                if(!match) return;
+                if(!match) {
+                    triggerMatchEnd("Opponent disconnected or left the match!");
+                    return;
+                }
 
                 if(match.status === 'ended') {
-                    console.warn("Match has ended.");
-                    alert("Match ended!");
+                    console.warn("Match ended by server notice.");
+                    alert(match.reason || "Match ended!");
+                    currentServerId = null;
                     switchScreen('lobby');
                     return;
                 }
 
+                // Check if host or guest left/went offline from presence tracking
+                if (match.host && match.guest) {
+                    get(ref(db, 'presence')).then(presSnap => {
+                        const presData = presSnap.val() || {};
+                        const hostOnline = presData[match.host] && presData[match.host].online;
+                        const guestOnline = presData[match.guest] && presData[match.guest].online;
+                        if (!hostOnline || !guestOnline) {
+                            console.warn("A player went offline or AFK. Ending match.");
+                            triggerMatchEnd("Opponent went offline / AFK!");
+                        }
+                    });
+                }
+
                 renderBoard(match);
             });
+
+            // Setup Chat Listener for this room
+            setupMatchChat();
 
             function renderBoard(match) {
                 ctx.clearRect(0, 0, 320, 320);
@@ -696,8 +841,8 @@
             canvas.onclick = (e) => {
                 get(srvRef).then((snapshot) => {
                     const match = snapshot.val();
-                    if(match.turn !== myTeam) {
-                        console.log("Move rejected: Not your turn.");
+                    if(!match || match.turn !== myTeam) {
+                        console.log("Move rejected: Not your turn or match inactive.");
                         return;
                     }
 
@@ -781,7 +926,27 @@
             };
         }
 
-        // Chat Logic
+        // Fixed Match Chat Logic
+        function setupMatchChat() {
+            const chatMessagesEl = document.getElementById('chatMessages');
+            chatMessagesEl.innerHTML = ''; // reset chat view for room
+
+            const chatRef = ref(db, `servers/${currentServerId}/chat`);
+            onValue(chatRef, (snapshot) => {
+                const data = snapshot.val();
+                chatMessagesEl.innerHTML = '';
+                if(!data) return;
+
+                Object.values(data).forEach(msg => {
+                    const msgDiv = document.createElement('div');
+                    msgDiv.className = 'chat-msg';
+                    msgDiv.innerHTML = `<b>${msg.sender}:</b> ${msg.text}`;
+                    chatMessagesEl.appendChild(msgDiv);
+                });
+                chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+            });
+        }
+
         document.getElementById('chatSend').addEventListener('click', sendChatMessage);
         document.getElementById('chatInput').addEventListener('keypress', (e) => {
             if(e.key === 'Enter') sendChatMessage();
@@ -790,13 +955,20 @@
         function sendChatMessage() {
             const input = document.getElementById('chatInput');
             const msg = input.value.trim();
-            if(!msg || !currentServerId) return;
+            if(!msg || !currentServerId) {
+                console.warn("Chat send blocked: Message empty or no active server room.");
+                return;
+            }
 
             console.log(`Sending chat message from ${currentUser}: "${msg}"`);
             const chatRef = ref(db, `servers/${currentServerId}/chat`);
             push(chatRef, {
                 sender: currentUser,
                 text: msg
+            }).then(() => {
+                console.log("Chat message successfully delivered to database.");
+            }).catch(err => {
+                console.error("Failed to push chat message:", err);
             });
             input.value = '';
         }
