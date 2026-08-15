@@ -283,11 +283,44 @@
             width: auto;
             margin: 0;
         }
+
+        /* In-page Console Tab (Matching offline version) */
+        #console-container {
+            width: 100%;
+            max-width: 400px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 8px;
+            margin-top: 10px;
+            overflow: hidden;
+            font-family: monospace;
+            box-sizing: border-box;
+        }
+        .console-header {
+            background: #1a1a1a;
+            padding: 6px 10px;
+            font-size: 0.75rem;
+            color: #00ff66;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        #console-logs {
+            height: 90px;
+            overflow-y: auto;
+            padding: 6px;
+            font-size: 0.7rem;
+            color: #00ff66;
+            text-align: left;
+            line-height: 1.25;
+            background: #080808;
+        }
     </style>
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.0</div>
+    <div class="version-badge">devonline v1.1-console</div>
 
     <!-- 1. LOGIN SCREEN -->
     <div id="login-screen" class="screen active">
@@ -362,9 +395,54 @@
         </div>
     </div>
 
+    <!-- In-Page Console Tracker Drawer -->
+    <div id="console-container">
+        <div class="console-header">
+            <span>LIVE SYSTEM CONSOLE</span>
+            <button id="clearConsole" style="background:none; border:none; color:#ff5252; cursor:pointer; font-size:0.7rem; font-weight:bold;">CLEAR</button>
+        </div>
+        <div id="console-logs"></div>
+    </div>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getDatabase, ref, set, onValue, push, remove, update, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        // Console Tracking Interceptor to mirror browser console logs to on-screen console box
+        const consoleLogsEl = document.getElementById('console-logs');
+        function logToScreen(type, args) {
+            const line = document.createElement('div');
+            line.textContent = `[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ` + Array.from(args).map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg) : arg
+            ).join(' ');
+            if(type === 'error') line.style.color = '#ff5252';
+            if(type === 'warn') line.style.color = '#ffeb3b';
+            consoleLogsEl.appendChild(line);
+            consoleLogsEl.scrollTop = consoleLogsEl.scrollHeight;
+        }
+
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+        const originalConsoleWarn = console.warn;
+
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, args);
+            logToScreen('log', args);
+        };
+        console.error = function(...args) {
+            originalConsoleError.apply(console, args);
+            logToScreen('error', args);
+        };
+        console.warn = function(...args) {
+            originalConsoleWarn.apply(console, args);
+            logToScreen('warn', args);
+        };
+
+        document.getElementById('clearConsole').onclick = () => {
+            consoleLogsEl.innerHTML = '';
+        };
+
+        console.log("Initializing DevOnline Firebase App...");
 
         const firebaseConfig = {
             databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app/"
@@ -372,6 +450,7 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+        console.log("Firebase connection established successfully.");
 
         // 10 Preset Accounts
         const validUsers = {};
@@ -379,13 +458,10 @@
             validUsers[`player${i}`] = "123";
         }
 
-        // App State Variables
         let currentUser = localStorage.getItem('devOnlineUser') || null;
         let currentServerId = null;
-        let myTeam = null; // 'blue' or 'red'
-        let unsubscribeMatch = null;
+        let myTeam = null;
 
-        // UI Elements
         const screens = {
             login: document.getElementById('login-screen'),
             lobby: document.getElementById('lobby-screen'),
@@ -394,9 +470,8 @@
         };
 
         function switchScreen(name) {
-            Object.values(screens.login.parentNode.children).forEach(el => {
-                if(el.classList && el.classList.contains('screen')) el.classList.remove('active');
-            });
+            console.log(`Switching view to screen: ${name}`);
+            Object.values(screens).forEach(el => el.classList.remove('active'));
             screens[name].classList.add('active');
         }
 
@@ -406,29 +481,36 @@
             const p = document.getElementById('passInput').value.trim();
             const err = document.getElementById('loginError');
 
+            console.log(`Login attempt initiated for username: "${u}"`);
+
             if(validUsers[u] && validUsers[u] === p) {
                 currentUser = u;
                 localStorage.setItem('devOnlineUser', u);
                 err.textContent = '';
+                console.log(`Login successful. Welcome user: ${currentUser}`);
                 initLobby();
             } else {
                 err.textContent = "Invalid account credentials!";
+                console.warn(`Login failed for username: "${u}"`);
             }
         });
 
         document.getElementById('logoutBtn').addEventListener('click', () => {
+            console.log(`User ${currentUser} logged out.`);
             localStorage.removeItem('devOnlineUser');
             currentUser = null;
             switchScreen('login');
         });
 
         if(currentUser) {
+            console.log(`Found active session in localStorage for user: ${currentUser}`);
             initLobby();
         }
 
         function initLobby() {
             document.getElementById('welcomeUser').textContent = `User: ${currentUser}`;
             switchScreen('lobby');
+            console.log("Loading server lobby data stream...");
 
             const serversRef = ref(db, 'servers');
             onValue(serversRef, (snapshot) => {
@@ -462,14 +544,11 @@
 
         // Create Server
         document.getElementById('createServerBtn').addEventListener('click', () => {
+            console.log(`User ${currentUser} is creating a new server instance...`);
             const newSrvRef = push(ref(db, 'servers'));
             currentServerId = newSrvRef.key;
             myTeam = 'blue';
 
-            // Initial 8x8 Board Preset Units
-            // Grid is 8x8. Cell size 40px (Canvas 320x320).
-            // Blue units at bottom (row 7): [0: Tank, 2: Infantry, 5: Infantry]
-            // Red units at top (row 0): [2: Infantry, 5: Infantry, 7: Tank]
             const initialUnits = [
                 { id: 'b1', team: 'blue', type: 'tank', x: 1, y: 7 },
                 { id: 'b2', team: 'blue', type: 'infantry', x: 3, y: 7 },
@@ -486,14 +565,18 @@
                 turn: 'blue',
                 units: initialUnits
             }).then(() => {
+                console.log(`Server successfully created with ID: ${currentServerId} (Host assigned Blue Team)`);
                 document.getElementById('roomCodeDisplay').textContent = `Server ID: ${currentServerId}`;
                 switchScreen('wait');
                 listenToMatchState();
+            }).catch(err => {
+                console.error("Error creating server:", err);
             });
         });
 
         document.getElementById('cancelRoomBtn').addEventListener('click', () => {
             if(currentServerId) {
+                console.log(`Cancelling server room ${currentServerId}`);
                 remove(ref(db, `servers/${currentServerId}`));
                 currentServerId = null;
             }
@@ -503,13 +586,17 @@
         function joinServer(srvId) {
             currentServerId = srvId;
             myTeam = 'red';
+            console.log(`User ${currentUser} joining server ${srvId} as Red Team guest.`);
 
             update(ref(db, `servers/${srvId}`), {
                 guest: currentUser,
                 status: 'playing'
             }).then(() => {
+                console.log("Successfully joined match. Starting game canvas interface.");
                 switchScreen('game');
                 startCanvasGame();
+            }).catch(err => {
+                console.error("Error joining server:", err);
             });
         }
 
@@ -518,17 +605,19 @@
             onValue(srvRef, (snapshot) => {
                 const srv = snapshot.val();
                 if(srv && srv.status === 'playing') {
+                    console.log("Opponent joined! Match starting status triggered.");
                     switchScreen('game');
                     startCanvasGame();
                 }
             });
         }
 
-        // Canvas Game Logic (8x8 Grid, Tanks & Infantry, Superunits, Combat)
+        // Canvas Game Logic
         function startCanvasGame() {
+            console.log("Canvas game loop initialized.");
             const canvas = document.getElementById('gameCanvas');
             const ctx = canvas.getContext('2d');
-            const tileSize = 40; // 320 / 8
+            const tileSize = 40;
             let selectedUnit = null;
 
             const srvRef = ref(db, `servers/${currentServerId}`);
@@ -538,6 +627,7 @@
                 if(!match) return;
 
                 if(match.status === 'ended') {
+                    console.warn("Match has ended.");
                     alert("Match ended!");
                     switchScreen('lobby');
                     return;
@@ -549,7 +639,6 @@
             function renderBoard(match) {
                 ctx.clearRect(0, 0, 320, 320);
 
-                // Draw 8x8 Grid lines & checkerboard
                 for(let r=0; r<8; r++) {
                     for(let c=0; c<8; c++) {
                         ctx.fillStyle = (r + c) % 2 === 0 ? '#1e1e1e' : '#161616';
@@ -559,12 +648,10 @@
                     }
                 }
 
-                // Highlight selected unit & legal moves (adjacent 1 square for infantry/tank barebones)
                 if(selectedUnit && match.turn === myTeam) {
                     ctx.fillStyle = 'rgba(33, 150, 243, 0.3)';
                     ctx.fillRect(selectedUnit.x * tileSize, selectedUnit.y * tileSize, tileSize, tileSize);
                     
-                    // Show basic movement neighbors
                     for(let dr=-1; dr<=1; dr++) {
                         for(let dc=-1; dc<=1; dc++) {
                             const nx = selectedUnit.x + dc;
@@ -577,7 +664,6 @@
                     }
                 }
 
-                // Draw Units
                 if(match.units) {
                     match.units.forEach(u => {
                         ctx.fillStyle = u.team === 'blue' ? '#2196F3' : '#ff5252';
@@ -585,9 +671,135 @@
                         ctx.arc(u.x * tileSize + tileSize/2, u.y * tileSize + tileSize/2, tileSize/3, 0, Math.PI*2);
                         ctx.fill();
 
-                        // Label letter: T for Tank, I for Infantry
                         ctx.fillStyle = '#fff';
                         ctx.font = 'bold 12px sans-serif';
                         ctx.textAlign = 'center';
                         ctx.textBaseline = 'middle';
-                    
+                        ctx.fillText(u.type === 'tank' ? 'T' : 'I', u.x * tileSize + tileSize/2, u.y * tileSize + tileSize/2);
+                    });
+                }
+
+                const banner = document.getElementById('statusBanner');
+                const badge = document.getElementById('playerTeamBadge');
+                badge.textContent = `You are: ${myTeam.toUpperCase()} Team`;
+                badge.style.color = myTeam === 'blue' ? '#2196F3' : '#ff5252';
+
+                if(match.turn === myTeam) {
+                    banner.textContent = "Your Turn! Click your unit, then click a tile to move.";
+                    banner.style.color = "#4CAF50";
+                } else {
+                    banner.textContent = `Opponent's Turn (${match.turn.toUpperCase()}). Please wait...`;
+                    banner.style.color = "#ffeb3b";
+                }
+            }
+
+            canvas.onclick = (e) => {
+                get(srvRef).then((snapshot) => {
+                    const match = snapshot.val();
+                    if(match.turn !== myTeam) {
+                        console.log("Move rejected: Not your turn.");
+                        return;
+                    }
+
+                    const rect = canvas.getBoundingClientRect();
+                    const clickX = Math.floor((e.clientX - rect.left) / tileSize);
+                    const clickY = Math.floor((e.clientY - rect.top) / tileSize);
+
+                    const clickedUnit = match.units.find(u => u.x === clickX && u.y === clickY && u.team === myTeam);
+
+                    if(clickedUnit) {
+                        selectedUnit = clickedUnit;
+                        console.log(`Unit selected: ${clickedUnit.type} at (${clickedUnit.x}, ${clickedUnit.y})`);
+                        renderBoard(match);
+                        return;
+                    }
+
+                    if(selectedUnit) {
+                        const dx = Math.abs(clickX - selectedUnit.x);
+                        const dy = Math.abs(clickY - selectedUnit.y);
+
+                        if(dx <= 1 && dy <= 1) {
+                            let units = [...match.units];
+                            const targetUnitIndex = units.findIndex(u => u.x === clickX && u.y === clickY);
+
+                            if(targetUnitIndex !== -1) {
+                                const targetUnit = units[targetUnitIndex];
+                                if(targetUnit.team !== myTeam) {
+                                    console.log(`Combat triggered between attacker ${selectedUnit.type} and defender ${targetUnit.type}`);
+                                    
+                                    const getClusterPower = (u, list) => {
+                                        let cluster = [u];
+                                        let frontier = [u];
+                                        while(frontier.length > 0) {
+                                            let current = frontier.pop();
+                                            list.forEach(other => {
+                                                if(other.team === u.team && !cluster.includes(other)) {
+                                                    let dist = Math.max(Math.abs(other.x - current.x), Math.abs(other.y - current.y));
+                                                    if(dist <= 1) {
+                                                        cluster.push(other);
+                                                        frontier.push(other);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        return cluster.reduce((sum, item) => sum + (item.type === 'tank' ? 2 : 1), 0);
+                                    };
+
+                                    const attackerPower = getClusterPower(selectedUnit, units);
+                                    const defenderPower = getClusterPower(targetUnit, units);
+                                    console.log(`Combat Power -> Attacker: ${attackerPower} vs Defender: ${defenderPower}`);
+
+                                    units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
+
+                                    if(attackerPower > defenderPower) {
+                                        console.log("Attacker won! Destroying defender unit.");
+                                        units = units.filter(u => u.id !== targetUnit.id);
+                                    } else if(attackerPower < defenderPower) {
+                                        console.log("Defender won! Attacking unit destroyed.");
+                                        units = units.filter(u => u.id !== selectedUnit.id);
+                                    } else {
+                                        console.log("Stalemate power match! Both units eliminated.");
+                                        units = units.filter(u => u.id !== targetUnit.id && u.id !== selectedUnit.id);
+                                    }
+                                }
+                            } else {
+                                console.log(`Moving unit to empty tile (${clickX}, ${clickY})`);
+                                units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
+                            }
+
+                            const nextTurn = myTeam === 'blue' ? 'red' : 'blue';
+                            selectedUnit = null;
+
+                            console.log(`Updating match state. Turn switching to: ${nextTurn}`);
+                            update(srvRef, {
+                                units: units,
+                                turn: nextTurn
+                            });
+                        }
+                    }
+                });
+            };
+        }
+
+        // Chat Logic
+        document.getElementById('chatSend').addEventListener('click', sendChatMessage);
+        document.getElementById('chatInput').addEventListener('keypress', (e) => {
+            if(e.key === 'Enter') sendChatMessage();
+        });
+
+        function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if(!msg || !currentServerId) return;
+
+            console.log(`Sending chat message from ${currentUser}: "${msg}"`);
+            const chatRef = ref(db, `servers/${currentServerId}/chat`);
+            push(chatRef, {
+                sender: currentUser,
+                text: msg
+            });
+            input.value = '';
+        }
+    </script>
+</body>
+</html>
