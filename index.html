@@ -389,7 +389,7 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.4-warn</div>
+    <div class="version-badge">devonline v1.5-fixed</div>
 
     <!-- Roblox-Style Active Players List Sidebar Drawer -->
     <div class="roblox-players-bar" id="robloxBar">
@@ -562,7 +562,6 @@
         // Browser Reload / Close Prevention Warning Hook
         window.addEventListener('beforeunload', (e) => {
             if (currentServerId) {
-                // Standard browser prompt warning user that leaving/reloading might affect match status
                 e.preventDefault();
                 e.returnValue = "You are currently in an active match! Reloading or leaving may interrupt your game session.";
                 return e.returnValue;
@@ -803,7 +802,7 @@
             });
         }
 
-        // Surrender / Leave Match Handler
+        // Absolute Surrender / Leave Match Handler
         document.getElementById('surrenderBtn').addEventListener('click', () => {
             triggerMatchEnd("You surrendered or left the match.");
         });
@@ -811,7 +810,17 @@
         function triggerMatchEnd(reason) {
             console.log(`Match termination triggered: ${reason}`);
             if (currentServerId) {
-                remove(ref(db, `servers/${currentServerId}`));
+                // Instantly update database node status to 'ended' so opponents are also forced out
+                update(ref(db, `servers/${currentServerId}`), {
+                    status: 'ended',
+                    reason: `${currentUser} surrendered and left the match.`
+                }).then(() => {
+                    // Cleanly remove room entirely after notifying
+                    remove(ref(db, `servers/${currentServerId}`));
+                }).catch(() => {
+                    remove(ref(db, `servers/${currentServerId}`));
+                });
+
                 currentServerId = null;
                 localStorage.removeItem('devOnlineServer');
                 localStorage.removeItem('devOnlineTeam');
@@ -834,6 +843,11 @@
                 const match = snapshot.val();
                 if(!match) {
                     console.warn("Match data missing or room deleted.");
+                    alert("The match was ended or the opponent left.");
+                    currentServerId = null;
+                    localStorage.removeItem('devOnlineServer');
+                    localStorage.removeItem('devOnlineTeam');
+                    initLobby();
                     return;
                 }
 
@@ -852,6 +866,22 @@
 
             setupMatchChat();
 
+            // Coordinate Flipping Helpers for Chess-like Perspective
+            // Blue sees from bottom (y=7 down to y=0), Red sees flipped from bottom (y=0 at bottom up to y=7)
+            function boardToScreen(x, y) {
+                if (myTeam === 'red') {
+                    return { x: 7 - x, y: 7 - y };
+                }
+                return { x: x, y: y };
+            }
+
+            function screenToboard(sx, sy) {
+                if (myTeam === 'red') {
+                    return { x: 7 - sx, y: 7 - sy };
+                }
+                return { x: sx, y: sy };
+            }
+
             function renderBoard(match) {
                 ctx.clearRect(0, 0, 320, 320);
 
@@ -865,16 +895,18 @@
                 }
 
                 if(selectedUnit && match.turn === myTeam) {
+                    const screenPos = boardToScreen(selectedUnit.x, selectedUnit.y);
                     ctx.fillStyle = 'rgba(33, 150, 243, 0.3)';
-                    ctx.fillRect(selectedUnit.x * tileSize, selectedUnit.y * tileSize, tileSize, tileSize);
+                    ctx.fillRect(screenPos.x * tileSize, screenPos.y * tileSize, tileSize, tileSize);
                     
                     for(let dr=-1; dr<=1; dr++) {
                         for(let dc=-1; dc<=1; dc++) {
                             const nx = selectedUnit.x + dc;
                             const ny = selectedUnit.y + dr;
                             if(nx >=0 && nx < 8 && ny >= 0 && ny < 8) {
+                                const sPos = boardToScreen(nx, ny);
                                 ctx.strokeStyle = '#2196F3';
-                                ctx.strokeRect(nx * tileSize, ny * tileSize, tileSize, tileSize);
+                                ctx.strokeRect(sPos.x * tileSize, sPos.y * tileSize, tileSize, tileSize);
                             }
                         }
                     }
@@ -882,16 +914,17 @@
 
                 if(match.units) {
                     match.units.forEach(u => {
+                        const sPos = boardToScreen(u.x, u.y);
                         ctx.fillStyle = u.team === 'blue' ? '#2196F3' : '#ff5252';
                         ctx.beginPath();
-                        ctx.arc(u.x * tileSize + tileSize/2, u.y * tileSize + tileSize/2, tileSize/3, 0, Math.PI*2);
+                        ctx.arc(sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2, tileSize/3, 0, Math.PI*2);
                         ctx.fill();
 
                         ctx.fillStyle = '#fff';
                         ctx.font = 'bold 12px sans-serif';
                         ctx.textAlign = 'center';
                         ctx.textBaseline = 'middle';
-                        ctx.fillText(u.type === 'tank' ? 'T' : 'I', u.x * tileSize + tileSize/2, u.y * tileSize + tileSize/2);
+                        ctx.fillText(u.type === 'tank' ? 'T' : 'I', sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2);
                     });
                 }
 
@@ -918,14 +951,18 @@
                     }
 
                     const rect = canvas.getBoundingClientRect();
-                    const clickX = Math.floor((e.clientX - rect.left) / tileSize);
-                    const clickY = Math.floor((e.clientY - rect.top) / tileSize);
+                    const screenClickX = Math.floor((e.clientX - rect.left) / tileSize);
+                    const screenClickY = Math.floor((e.clientY - rect.top) / tileSize);
+
+                    const boardCoords = screenToboard(screenClickX, screenClickY);
+                    const clickX = boardCoords.x;
+                    const clickY = boardCoords.y;
 
                     const clickedUnit = match.units.find(u => u.x === clickX && u.y === clickY && u.team === myTeam);
 
                     if(clickedUnit) {
                         selectedUnit = clickedUnit;
-                        console.log(`Unit selected: ${clickedUnit.type} at (${clickedUnit.x}, ${clickedUnit.y})`);
+                        console.log(`Unit selected: ${clickedUnit.type} at board (${clickedUnit.x}, ${clickedUnit.y})`);
                         renderBoard(match);
                         return;
                     }
