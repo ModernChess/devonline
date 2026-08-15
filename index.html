@@ -457,7 +457,7 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.7-admin</div>
+    <div class="version-badge">devonline v1.8-single-session</div>
 
     <!-- Active Players List Sidebar Drawer -->
     <div class="players-bar" id="playersBar">
@@ -630,6 +630,13 @@
         const db = getDatabase(app);
         console.log("Firebase connection established successfully.");
 
+        // Unique session token generated per browser instance to prevent simultaneous multi-device logins
+        let sessionToken = localStorage.getItem('devOnlineSessionToken');
+        if (!sessionToken) {
+            sessionToken = 'sess_' + Math.random().toString(36.2) + Date.now().toString(36);
+            localStorage.setItem('devOnlineSessionToken', sessionToken);
+        }
+
         // 10 Preset Accounts
         const validUsers = {};
         for(let i=1; i<=10; i++) {
@@ -640,6 +647,7 @@
         let currentServerId = localStorage.getItem('devOnlineServer') || null;
         let myTeam = localStorage.getItem('devOnlineTeam') || null;
         let presenceRef = null;
+        let sessionUnsubscribe = null;
 
         const screens = {
             login: document.getElementById('login-screen'),
@@ -664,23 +672,39 @@
             }
         });
 
-        // Active Player List & Presence System Tracker
+        // Active Player List & Presence System Tracker (with Multi-Device Session Conflict Detection)
         function initPresenceSystem() {
             if (!currentUser) return;
             presenceRef = ref(db, `presence/${currentUser}`);
             
+            // Write our active session token to Firebase presence node
             set(presenceRef, {
                 online: true,
+                sessionToken: sessionToken,
                 lastSeen: serverTimestamp()
             });
             onDisconnect(presenceRef).remove();
 
-            setInterval(() => {
+            // Heartbeat update
+            const heartbeatInterval = setInterval(() => {
                 if(currentUser) {
-                    set(presenceRef, { online: true, lastSeen: serverTimestamp() });
+                    set(presenceRef, { online: true, sessionToken: sessionToken, lastSeen: serverTimestamp() });
+                } else {
+                    clearInterval(heartbeatInterval);
                 }
-            }, 12000);
+            }, 10000);
 
+            // Listen to presence node changes to detect if another device logged in with the same account
+            if (sessionUnsubscribe) sessionUnsubscribe();
+            sessionUnsubscribe = onValue(presenceRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data && data.sessionToken && data.sessionToken !== sessionToken) {
+                    console.warn(`Concurrent login detected for user ${currentUser} from another device! Signing out this session.`);
+                    forceSignOutDueToConcurrentLogin("Your account was logged in from another device. You have been signed out.");
+                }
+            });
+
+            // Global presence list watcher for UI drawer
             onValue(ref(db, 'presence'), (snapshot) => {
                 const data = snapshot.val() || {};
                 const activeUsers = Object.keys(data);
@@ -712,6 +736,22 @@
             });
         }
 
+        function forceSignOutDueToConcurrentLogin(msg) {
+            alert(msg);
+            if (presenceRef) {
+                remove(presenceRef);
+            }
+            if (currentServerId) {
+                remove(ref(db, `servers/${currentServerId}`));
+                currentServerId = null;
+                localStorage.removeItem('devOnlineServer');
+                localStorage.removeItem('devOnlineTeam');
+            }
+            localStorage.removeItem('devOnlineUser');
+            currentUser = null;
+            switchScreen('login');
+        }
+
         // Login Logic
         document.getElementById('loginBtn').addEventListener('click', () => {
             const u = document.getElementById('userInput').value.trim();
@@ -721,12 +761,26 @@
             console.log(`Login attempt initiated for username: "${u}"`);
 
             if(validUsers[u] && validUsers[u] === p) {
-                currentUser = u;
-                localStorage.setItem('devOnlineUser', u);
-                err.textContent = '';
-                console.log(`Login successful. Welcome user: ${currentUser}`);
-                initPresenceSystem();
-                checkExistingMatchReconnection();
+                // Check if user is already actively online on another device before granting login
+                const targetPresenceRef = ref(db, `presence/${u}`);
+                get(targetPresenceRef).then(snapshot => {
+                    const existingPresence = snapshot.val();
+                    if (existingPresence && existingPresence.online) {
+                        console.warn(`Login rejected: User ${u} is already active on another device.`);
+                        err.textContent = "Error: Account is already logged in on another device!";
+                        return;
+                    }
+
+                    currentUser = u;
+                    localStorage.setItem('devOnlineUser', u);
+                    err.textContent = '';
+                    console.log(`Login successful. Welcome user: ${currentUser}`);
+                    initPresenceSystem();
+                    checkExistingMatchReconnection();
+                }).catch(err => {
+                    console.error("Presence check error during login:", err);
+                    err.textContent = "Login verification failed. Try again.";
+                });
             } else {
                 err.textContent = "Invalid account credentials!";
                 console.warn(`Login failed for username: "${u}"`);
@@ -852,7 +906,6 @@
             if(confirm("ADMIN ACTION: Are you sure you want to clear all active servers, match data, and universal chat logs from Firebase?")) {
                 console.log("Admin clearing all servers and user data nodes in Firebase...");
                 
-                // Remove servers node and globalChat node
                 const updates = {};
                 updates['servers'] = null;
                 updates['globalChat'] = null;
