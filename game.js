@@ -1,283 +1,286 @@
-import { db } from './firebase-config.js';
-import { ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-import { getCurrentServerId, getMyTeam, setCurrentServerId, setMyTeam } from './lobby.js';
-import { getCurrentUser } from './auth-presence.js';
-
-let gameStateUnsubscribe = null;
-let selectedUnit = null;
-let currentUnits = [];
-let currentTurn = 'blue';
-let matchStatus = 'connecting';
-
-// Start or listen to active match state canvas game
-export function initGame(onGameOverCallback) {
-    const serverId = getCurrentServerId();
-    const myTeam = getMyTeam();
-    const currentUser = getCurrentUser();
-    
-    if (!serverId) return;
-
-    const teamBadge = document.getElementById('playerTeamBadge');
-    if (teamBadge) {
-        teamBadge.textContent = `Team: ${myTeam ? myTeam.toUpperCase() : 'SPECTATOR'} (${currentUser})`;
-        teamBadge.style.color = myTeam === 'blue' ? 'var(--secondary)' : 'var(--danger)';
-    }
-
-    console.log(`Initializing game engine for server ${serverId} as team: ${myTeam}`);
-
-    const serverRef = ref(db, `servers/${serverId}`);
-    
-    // Listen to real-time changes on the match server node
-    if (gameStateUnsubscribe) gameStateUnsubscribe();
-    gameStateUnsubscribe = onValue(serverRef, (snapshot) => {
-        const data = snapshot.val();
-        const banner = document.getElementById('statusBanner');
-
-        if (!data) {
-            console.warn("Server was deleted or closed mid-match.");
-            if (banner) banner.textContent = "Game Over: The match server was closed or deleted.";
-            alert("Match closed by host or terminated.");
-            setTimeout(() => {
-                leaveMatchCleanup();
-                if (onGameOverCallback) onGameOverCallback();
-            }, 1500);
-            return;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Chess Online - Match Arena</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --surface-color: #1e1e1e;
+            --surface-alt: #161616;
+            --border-color: #333;
+            --primary: #4CAF50;
+            --secondary: #2196F3;
+            --danger: #ff5252;
+            --text-color: #ffffff;
+            --text-muted: #888;
         }
 
-        // Check if opponent left or went offline abruptly
-        const host = data.host;
-        const guest = data.guest;
-        const opponent = myTeam === 'blue' ? guest : host;
-
-        if (data.status === 'playing' && !opponent) {
-            if (banner) banner.textContent = "PAUSED: Opponent has left or disconnected!";
-            console.warn("Opponent disconnected during match. Game paused.");
-            return;
+        body {
+            margin: 0;
+            padding: 15px;
+            background: var(--bg-color);
+            color: var(--text-color);
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            box-sizing: border-box;
         }
 
-        matchStatus = data.status;
-        currentTurn = data.turn;
-        currentUnits = data.units || [];
+        .version-badge {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            background: #ff9800;
+            color: #121212;
+            font-size: 0.75rem;
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            z-index: 1000;
+        }
 
-        if (banner) {
-            if (matchStatus === 'waiting') {
-                banner.textContent = "Waiting for opponent to join...";
-            } else {
-                if (currentTurn === myTeam) {
-                    banner.textContent = "Your Turn! Make a tactical move.";
-                    banner.style.color = "#4CAF50";
-                } else {
-                    banner.textContent = `Opponent's Turn (${currentTurn.toUpperCase()})...`;
-                    banner.style.color = "#ffeb3b";
+        .screen {
+            display: flex;
+            width: 100%;
+            max-width: 400px;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .btn-danger { background: var(--danger); }
+        .btn-secondary { background: var(--secondary); }
+
+        #canvas-container {
+            position: relative;
+            width: 320px;
+            height: 320px;
+            background: #222;
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        canvas {
+            display: block;
+            background: #181818;
+        }
+
+        .status-banner {
+            background: var(--surface-color);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            margin-bottom: 15px;
+            width: 100%;
+            box-sizing: border-box;
+            text-align: center;
+            font-weight: bold;
+            color: #ffeb3b;
+        }
+
+        .chat-widget {
+            width: 100%;
+            background: var(--surface-color);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+        }
+
+        .chat-header {
+            background: #252525;
+            padding: 8px 12px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: var(--secondary);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .chat-body {
+            height: 120px;
+            overflow-y: auto;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: var(--surface-alt);
+        }
+
+        .chat-msg {
+            font-size: 0.8rem;
+            background: #222;
+            padding: 4px 8px;
+            border-radius: 4px;
+            word-break: break-word;
+            text-align: left;
+        }
+
+        .chat-input-area {
+            display: flex;
+            border-top: 1px solid var(--border-color);
+            padding: 6px;
+            background: var(--surface-color);
+            gap: 6px;
+        }
+
+        .chat-input-area input {
+            flex: 1;
+            background: #2a2a2a;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 4px 8px;
+            color: #fff;
+            font-size: 0.8rem;
+            outline: none;
+        }
+
+        #console-container {
+            width: 100%;
+            max-width: 400px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 8px;
+            margin-top: 10px;
+            overflow: hidden;
+            font-family: monospace;
+            box-sizing: border-box;
+        }
+        .console-header {
+            background: #1a1a1a;
+            padding: 6px 10px;
+            font-size: 0.75rem;
+            color: #00ff66;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        #console-logs {
+            height: 90px;
+            overflow-y: auto;
+            padding: 6px;
+            font-size: 0.7rem;
+            color: #00ff66;
+            text-align: left;
+            line-height: 1.25;
+            background: #080808;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="version-badge">devonline v1.8-split-game</div>
+
+    <!-- 4. GAME SCREEN -->
+    <div id="game-screen" class="screen">
+        <div class="top-bar">
+            <span id="playerTeamBadge" style="font-weight:bold; font-size:0.85rem;">Team: LOADING</span>
+            <button class="btn btn-danger" id="surrenderBtn">Surrender / Leave</button>
+        </div>
+        
+        <div class="status-banner" id="statusBanner">Connecting to match arena...</div>
+
+        <div id="canvas-container">
+            <canvas id="gameCanvas" width="320" height="320"></canvas>
+        </div>
+
+        <div class="chat-widget">
+            <div class="chat-header" id="chatToggle">
+                <span>Match Chat</span>
+                <span>▲</span>
+            </div>
+            <div class="chat-body" id="chatMessages">
+                <div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">Match chat initialized.</div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" placeholder="Say something...">
+                <button class="btn btn-secondary" id="chatSend">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- In-Page Console Tracker Drawer -->
+    <div id="console-container">
+        <div class="console-header">
+            <span>LIVE SYSTEM CONSOLE</span>
+            <button id="clearConsole" style="background:none; border:none; color:#ff5252; cursor:pointer; font-size:0.7rem; font-weight:bold;">CLEAR</button>
+        </div>
+        <div id="console-logs"></div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, onValue, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        const consoleLogsEl = document.getElementById('console-logs');
+        function logToScreen(type, args) {
+            const line = document.createElement('div');
+            line.textContent = `[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ` + Array.from(args).map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg) : arg
+            ).join(' ');
+            if(type === 'error') line.style.color = '#ff5252';
+            if(type === 'warn') line.style.color = '#ffeb3b';
+            consoleLogsEl.appendChild(line);
+            consoleLogsEl.scrollTop = consoleLogsEl.scrollHeight;
+        }
+
+        console.log = function(...args) { logToScreen('log', args); };
+        console.error = function(...args) { logToScreen('error', args); };
+        console.warn = function(...args) { logToScreen('warn', args); };
+        document.getElementById('clearConsole').onclick = () => { consoleLogsEl.innerHTML = ''; };
+
+        console.log("Initializing Game Canvas Firebase App...");
+        const firebaseConfig = { databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app/" };
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // Basic canvas render test loop
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        function drawGrid() {
+            ctx.fillStyle = '#181818';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const size = canvas.width / 8;
+            for(let r=0; r<8; r++) {
+                for(let c=0; c<8; c++) {
+                    ctx.fillStyle = (r+c)%2 === 0 ? '#262626' : '#1a1a1a';
+                    ctx.fillRect(c*size, r*size, size, size);
                 }
             }
         }
+        drawGrid();
+        console.log("Game canvas render loop ready.");
 
-        renderCanvas();
-    });
-
-    setupCanvasClickHandler();
-}
-
-// Render Board & Units on HTML5 Canvas with perspective mapping
-function renderCanvas() {
-    const canvas = document.getElementById('gameCanvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const cols = 8;
-    const rows = 8;
-    const cellSize = canvas.width / cols;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const myTeam = getMyTeam();
-
-    // Draw board grid squares
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            // If player is Red team, flip board perspective vertically
-            const displayR = (myTeam === 'red') ? (rows - 1 - r) : r;
-            const displayC = (myTeam === 'red') ? (cols - 1 - c) : c;
-
-            ctx.fillStyle = (r + c) % 2 === 0 ? '#262626' : '#1a1a1a';
-            ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
-
-            // Highlight selected unit
-            if (selectedUnit && selectedUnit.x === displayC && selectedUnit.y === displayR) {
-                ctx.strokeStyle = '#00ff66';
-                ctx.lineWidth = 3;
-                ctx.strokeRect(c * cellSize + 2, r * cellSize + 2, cellSize - 4, cellSize - 4);
-            }
-        }
-    }
-
-    // Draw Units
-    currentUnits.forEach(unit => {
-        let renderR = unit.y;
-        let renderC = unit.x;
-
-        // Apply Red team coordinate perspective transformation mapping
-        if (myTeam === 'red') {
-            renderR = rows - 1 - unit.y;
-            renderC = cols - 1 - unit.x;
-        }
-
-        const cx = renderC * cellSize + cellSize / 2;
-        const cy = renderR * cellSize + cellSize / 2;
-
-        ctx.beginPath();
-        ctx.arc(cx, cy, cellSize * 0.35, 0, Math.PI * 2);
-        ctx.fillStyle = unit.team === 'blue' ? '#2196F3' : '#ff5252';
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = '#fff';
-        ctx.stroke();
-
-        // Draw unit symbol letter inside token
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(unit.type === 'tank' ? 'T' : 'I', cx, cy);
-    });
-}
-
-// Canvas Click Interaction Controller
-function setupCanvasClickHandler() {
-    const canvas = document.getElementById('gameCanvas');
-    if (!canvas) return;
-
-    // Remove existing listener to prevent stacking duplicate bindings
-    const newCanvas = canvas.cloneNode(true);
-    canvas.parentNode.replaceChild(newCanvas, canvas);
-
-    newCanvas.addEventListener('click', (e) => {
-        const myTeam = getMyTeam();
-        if (currentTurn !== myTeam) {
-            console.warn("Not your turn!");
-            return;
-        }
-
-        const rect = newCanvas.getBoundingClientRect();
-        const clickX = e.clientX - rect.left;
-        const clickY = e.clientY - rect.top;
-
-        const cols = 8;
-        const rows = 8;
-        const cellSize = newCanvas.width / cols;
-
-        const clickedCol = Math.floor(clickX / cellSize);
-        const clickedRow = Math.floor(clickY / cellSize);
-
-        // Map back clicked canvas coordinates based on player team perspective
-        let boardX = clickedCol;
-        let boardY = clickedRow;
-
-        if (myTeam === 'red') {
-            boardX = cols - 1 - clickedCol;
-            boardY = rows - 1 - clickedRow;
-        }
-
-        console.log(`Canvas clicked at grid coordinate: [${boardX}, ${boardY}]`);
-
-        const clickedUnit = currentUnits.find(u => u.x === boardX && u.y === boardY);
-
-        if (selectedUnit) {
-            if (clickedUnit && clickedUnit.team === myTeam) {
-                // Switch selected unit to another friendly unit
-                selectedUnit = clickedUnit;
-                console.log(`Switched selection to friendly unit: ${selectedUnit.id}`);
-            } else {
-                // Execute move or attack action to target cell
-                executeMoveOrAttack(selectedUnit, boardX, boardY);
-                selectedUnit = null;
-            }
-        } else {
-            if (clickedUnit && clickedUnit.team === myTeam) {
-                selectedUnit = clickedUnit;
-                console.log(`Selected unit: ${selectedUnit.id} at [${boardX}, ${boardY}]`);
-            }
-        }
-        renderCanvas();
-    });
-}
-
-// Execute unit movement, cluster power rule verification, and turn switch
-function executeMoveOrAttack(unit, targetX, targetY) {
-    const serverId = getCurrentServerId();
-    if (!serverId) return;
-
-    // Basic range validation (Manhattan distance <= 2 for simplicity or adjacent check)
-    const distX = Math.abs(unit.x - targetX);
-    const distY = Math.abs(unit.y - targetY);
-
-    if (distX > 2 || distY > 2) {
-        console.warn("Move rejected: Out of range.");
-        alert("Target is out of movement range!");
-        return;
-    }
-
-    console.log(`Executing move for unit ${unit.id} to [${targetX}, ${targetY}]`);
-
-    let updatedUnits = currentUnits.map(u => {
-        if (u.id === unit.id) {
-            return { ...u, x: targetX, y: targetY };
-        }
-        return u;
-    });
-
-    // Check combat / cluster power capture rules (if target square contains enemy unit)
-    const targetOccupant = currentUnits.find(u => u.x === targetX && u.y === targetY);
-    if (targetOccupant && targetOccupant.team !== unit.team) {
-        console.log(`Combat initiated! Unit ${unit.id} attacks enemy unit ${targetOccupant.id}`);
-        // Remove enemy unit captured in combat clash
-        updatedUnits = updatedUnits.filter(u => u.id !== targetOccupant.id);
-    }
-
-    const nextTurn = currentTurn === 'blue' ? 'red' : 'blue';
-
-    update(ref(db, `servers/${serverId}`), {
-        units: updatedUnits,
-        turn: nextTurn
-    }).then(() => {
-        console.log(`Move completed successfully. Turn passed to: ${nextTurn}`);
-    }).catch(err => {
-        console.error("Failed to sync move to Firebase:", err);
-    });
-}
-
-// Surrender or Leave Match Cleanly
-export function surrenderMatch(onCompleteCallback) {
-    const serverId = getCurrentServerId();
-    const myTeam = getMyTeam();
-    const currentUser = getCurrentUser();
-
-    if (!serverId) {
-        leaveMatchCleanup();
-        if (onCompleteCallback) onCompleteCallback();
-        return;
-    }
-
-    console.log(`User ${currentUser} (${myTeam}) is surrendering/leaving match server ${serverId}`);
-
-    const serverRef = ref(db, `servers/${serverId}`);
-    remove(serverRef).then(() => {
-        console.log("Match server destroyed due to surrender/leave.");
-        leaveMatchCleanup();
-        if (onCompleteCallback) onCompleteCallback();
-    }).catch(err => {
-        console.error("Error deleting match server on surrender:", err);
-        leaveMatchCleanup();
-        if (onCompleteCallback) onCompleteCallback();
-    });
-}
-
-function leaveMatchCleanup() {
-    setCurrentServerId(null);
-    setMyTeam(null);
-    if (gameStateUnsubscribe) {
-        gameStateUnsubscribe();
-        gameStateUnsubscribe = null;
-    }
-    selectedUnit = null;
-}
+        document.getElementById('surrenderBtn').onclick = () => {
+            window.location.href = 'index.html';
+        };
+    </script>
+</body>
+</html>
