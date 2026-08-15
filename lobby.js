@@ -1,4 +1,3 @@
-
 import { db } from './firebase-config.js';
 import { ref, set, onValue, push, remove, update, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 import { getCurrentUser } from './auth-presence.js';
