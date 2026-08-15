@@ -46,7 +46,7 @@
         }
 
         /* Active Players Sidebar / List Drawer */
-        .roblox-players-bar {
+        .players-bar {
             width: 100%;
             max-width: 400px;
             background: var(--surface-color);
@@ -57,7 +57,7 @@
             box-sizing: border-box;
         }
 
-        .roblox-bar-header {
+        .players-bar-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -86,7 +86,7 @@
             box-shadow: 0 0 8px var(--primary);
         }
 
-        .roblox-players-list {
+        .players-list {
             display: flex;
             flex-direction: column;
             gap: 4px;
@@ -96,7 +96,7 @@
             padding-top: 6px;
         }
 
-        .roblox-player-card {
+        .player-card {
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -223,9 +223,9 @@
             background: var(--surface-alt);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            height: 180px;
+            height: 150px;
             overflow-y: auto;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
             width: 100%;
             box-sizing: border-box;
             padding: 8px;
@@ -246,6 +246,74 @@
         .server-item button {
             padding: 4px 10px;
             font-size: 0.75rem;
+            width: auto;
+            margin: 0;
+        }
+
+        /* Universal Lobby Global Chat Widget */
+        .global-chat-widget {
+            width: 100%;
+            max-width: 400px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+        }
+
+        .global-chat-header {
+            background: #252525;
+            padding: 8px 12px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: var(--secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .global-chat-body {
+            height: 110px;
+            overflow-y: auto;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: var(--surface-alt);
+        }
+
+        .global-chat-msg {
+            font-size: 0.78rem;
+            background: #222;
+            padding: 4px 8px;
+            border-radius: 4px;
+            word-break: break-word;
+            text-align: left;
+        }
+
+        .global-chat-input-area {
+            display: flex;
+            border-top: 1px solid var(--border-color);
+            padding: 6px;
+            background: var(--surface-color);
+            gap: 6px;
+        }
+
+        .global-chat-input-area input {
+            flex: 1;
+            background: #2a2a2a;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 4px 8px;
+            color: #fff;
+            font-size: 0.8rem;
+            outline: none;
+        }
+
+        .global-chat-input-area button {
+            padding: 4px 10px;
+            font-size: 0.8rem;
             width: auto;
             margin: 0;
         }
@@ -288,7 +356,7 @@
             color: #ffeb3b;
         }
 
-        /* Chat Widget */
+        /* Match Chat Widget */
         .chat-widget {
             width: 100%;
             background: var(--surface-color);
@@ -389,18 +457,18 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.6-fixed</div>
+    <div class="version-badge">devonline v1.7-admin</div>
 
     <!-- Active Players List Sidebar Drawer -->
-    <div class="roblox-players-bar" id="robloxBar">
-        <div class="roblox-bar-header">
+    <div class="players-bar" id="playersBar">
+        <div class="players-bar-header">
             <div class="online-indicator">
                 <div class="status-dot" id="statusDot"></div>
                 <span id="onlineCountText">Active Players (0)</span>
             </div>
             <span style="color:var(--secondary); font-size:0.7rem;">Players List ▲</span>
         </div>
-        <div class="roblox-players-list" id="robloxPlayersList">
+        <div class="players-list" id="playersListContainer">
             <div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>
         </div>
     </div>
@@ -445,9 +513,26 @@
             </div>
             <h2>Server Lobby</h2>
             <button class="btn" id="createServerBtn">Create New Server</button>
+            
+            <!-- Administrative Clear Button to wipe/clear all matches and Firebase user data -->
+            <button class="btn btn-danger" id="adminClearBtn" style="background:#d32f2f; margin-top:8px; font-size:0.85rem;">Admin: Clear All Matches & Data</button>
+
             <div style="margin: 10px 0 5px 0; font-size:0.75rem; color:var(--text-muted); text-align:left;">Available Servers:</div>
             <div class="server-list" id="serverList">
                 <div style="color:var(--text-muted); font-size:0.8rem; text-align:center; margin-top:20px;">No servers active. Create one!</div>
+            </div>
+        </div>
+
+        <!-- Universal Global Lobby Chat Widget (Outside Match Room) -->
+        <div class="global-chat-widget">
+            <div class="global-chat-header">
+                <span>Universal Global Chat</span>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Lobby Public</span>
+            </div>
+            <div class="global-chat-body" id="globalChatMessages"></div>
+            <div class="global-chat-input-area">
+                <input type="text" id="globalChatInput" placeholder="Chat with everyone in lobby...">
+                <button class="btn btn-secondary" id="globalChatSend">Send</button>
             </div>
         </div>
     </div>
@@ -603,7 +688,7 @@
 
                 const dotEl = document.getElementById('statusDot');
                 const countTextEl = document.getElementById('onlineCountText');
-                const listEl = document.getElementById('robloxPlayersList');
+                const listEl = document.getElementById('playersListContainer');
 
                 countTextEl.textContent = `Active Players (${count})`;
                 listEl.innerHTML = '';
@@ -613,7 +698,7 @@
                 } else {
                     activeUsers.forEach(uname => {
                         const card = document.createElement('div');
-                        card.className = 'roblox-player-card';
+                        card.className = 'player-card';
                         card.innerHTML = `<span>👤 <b>${uname}</b> ${uname === currentUser ? '(You)' : ''}</span><div class="player-badge-online"></div>`;
                         listEl.appendChild(card);
                     });
@@ -751,14 +836,82 @@
                         joinBtn.onclick = () => joinServer(srvId);
                         item.appendChild(joinBtn);
                     } else if(srv.status === 'playing') {
-                        // Display match as ongoing, online, and not joinable for 3rd/4th+ players or other users
                         item.innerHTML = `<span>Host: <b>${srv.host}</b> vs <b>${srv.guest || 'Guest'}</b></span><span style="color:#ffeb3b; font-size:0.75rem; font-weight:bold;">Ongoing / Online</span>`;
                     } else {
-                        return; // Ignore ended servers
+                        return;
                     }
                     listEl.appendChild(item);
                 });
             });
+
+            initGlobalChat();
+        }
+
+        // Administrative Clear Button Logic (Clears all matches & user-modified data in Firebase)
+        document.getElementById('adminClearBtn').addEventListener('click', () => {
+            if(confirm("ADMIN ACTION: Are you sure you want to clear all active servers, match data, and universal chat logs from Firebase?")) {
+                console.log("Admin clearing all servers and user data nodes in Firebase...");
+                
+                // Remove servers node and globalChat node
+                const updates = {};
+                updates['servers'] = null;
+                updates['globalChat'] = null;
+
+                update(ref(db), updates).then(() => {
+                    console.log("All servers and global chat wiped successfully.");
+                    currentServerId = null;
+                    localStorage.removeItem('devOnlineServer');
+                    localStorage.removeItem('devOnlineTeam');
+                    alert("All matches and chat data have been cleared successfully.");
+                    initLobby();
+                }).catch(err => {
+                    console.error("Failed to clear Firebase data:", err);
+                    alert("Error clearing data: " + err.message);
+                });
+            }
+        });
+
+        // Universal Global Chat System
+        function initGlobalChat() {
+            const globalChatMessagesEl = document.getElementById('globalChatMessages');
+            const globalChatRef = ref(db, 'globalChat');
+
+            onValue(globalChatRef, (snapshot) => {
+                const data = snapshot.val();
+                globalChatMessagesEl.innerHTML = '';
+                if(!data) {
+                    globalChatMessagesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center; margin-top:30px;">No messages in global chat yet. Say hi!</div>';
+                    return;
+                }
+
+                Object.values(data).forEach(msg => {
+                    const msgDiv = document.createElement('div');
+                    msgDiv.className = 'global-chat-msg';
+                    msgDiv.innerHTML = `<b>${msg.sender}:</b> ${msg.text}`;
+                    globalChatMessagesEl.appendChild(msgDiv);
+                });
+                globalChatMessagesEl.scrollTop = globalChatMessagesEl.scrollHeight;
+            });
+        }
+
+        document.getElementById('globalChatSend').addEventListener('click', sendGlobalChatMessage);
+        document.getElementById('globalChatInput').addEventListener('keypress', (e) => {
+            if(e.key === 'Enter') sendGlobalChatMessage();
+        });
+
+        function sendGlobalChatMessage() {
+            const input = document.getElementById('globalChatInput');
+            const msg = input.value.trim();
+            if(!msg || !currentUser) return;
+
+            console.log(`Sending global chat message from ${currentUser}: "${msg}"`);
+            const globalChatRef = ref(db, 'globalChat');
+            push(globalChatRef, {
+                sender: currentUser,
+                text: msg,
+                timestamp: serverTimestamp()
+            });
+            input.value = '';
         }
 
         // Create Server
