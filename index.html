@@ -45,7 +45,7 @@
             z-index: 1000;
         }
 
-        /* Roblox-style Active Players Sidebar / List Drawer */
+        /* Active Players Sidebar / List Drawer */
         .roblox-players-bar {
             width: 100%;
             max-width: 400px;
@@ -389,16 +389,16 @@
 </head>
 <body>
 
-    <div class="version-badge">devonline v1.5-fixed</div>
+    <div class="version-badge">devonline v1.6-fixed</div>
 
-    <!-- Roblox-Style Active Players List Sidebar Drawer -->
+    <!-- Active Players List Sidebar Drawer -->
     <div class="roblox-players-bar" id="robloxBar">
         <div class="roblox-bar-header">
             <div class="online-indicator">
                 <div class="status-dot" id="statusDot"></div>
                 <span id="onlineCountText">Active Players (0)</span>
             </div>
-            <span style="color:var(--secondary); font-size:0.7rem;">Roblox List ▲</span>
+            <span style="color:var(--secondary); font-size:0.7rem;">Players List ▲</span>
         </div>
         <div class="roblox-players-list" id="robloxPlayersList">
             <div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>
@@ -423,6 +423,16 @@
             </div>
             <button class="btn" id="loginBtn">Login</button>
             <div class="error-msg" id="loginError"></div>
+        </div>
+    </div>
+
+    <!-- RECONNECTION PROMPT SCREEN -->
+    <div id="reconnect-screen" class="screen">
+        <div class="card">
+            <h2>Active Match Found</h2>
+            <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:15px;">You have an ongoing match session saved. Would you like to rejoin or terminate it?</p>
+            <button class="btn btn-secondary" id="rejoinYesBtn">Rejoin Match</button>
+            <button class="btn btn-danger" id="rejoinNoBtn" style="margin-top:10px;">Terminate & Go to Lobby</button>
         </div>
     </div>
 
@@ -548,6 +558,7 @@
 
         const screens = {
             login: document.getElementById('login-screen'),
+            reconnect: document.getElementById('reconnect-screen'),
             lobby: document.getElementById('lobby-screen'),
             wait: document.getElementById('wait-screen'),
             game: document.getElementById('game-screen')
@@ -568,7 +579,7 @@
             }
         });
 
-        // Roblox-Style Player List & Presence System Tracker
+        // Active Player List & Presence System Tracker
         function initPresenceSystem() {
             if (!currentUser) return;
             presenceRef = ref(db, `presence/${currentUser}`);
@@ -663,13 +674,12 @@
                 return;
             }
 
-            console.log(`Checking if previous server room ${currentServerId} still exists for reconnection...`);
+            console.log(`Checking if previous server room ${currentServerId} still exists for manual reconnection choice...`);
             get(ref(db, `servers/${currentServerId}`)).then(snapshot => {
                 const srv = snapshot.val();
                 if (srv && srv.status === 'playing' && (srv.host === currentUser || srv.guest === currentUser)) {
-                    console.log(`Reconnection successful! Restoring session to match ID: ${currentServerId}`);
-                    switchScreen('game');
-                    startCanvasGame();
+                    console.log("Active saved match found. Prompting player to rejoin or decline.");
+                    switchScreen('reconnect');
                 } else {
                     console.log("Previous match no longer active. Entering lobby.");
                     currentServerId = null;
@@ -681,6 +691,30 @@
                 initLobby();
             });
         }
+
+        document.getElementById('rejoinYesBtn').addEventListener('click', () => {
+            console.log(`Player opted to rejoin match ID: ${currentServerId}`);
+            switchScreen('game');
+            startCanvasGame();
+        });
+
+        document.getElementById('rejoinNoBtn').addEventListener('click', () => {
+            console.log(`Player opted NOT to rejoin. Terminating match room: ${currentServerId}`);
+            if (currentServerId) {
+                update(ref(db, `servers/${currentServerId}`), {
+                    status: 'ended',
+                    reason: `${currentUser} declined to rejoin. Match terminated.`
+                }).then(() => {
+                    remove(ref(db, `servers/${currentServerId}`));
+                }).catch(() => {
+                    remove(ref(db, `servers/${currentServerId}`));
+                });
+                currentServerId = null;
+                localStorage.removeItem('devOnlineServer');
+                localStorage.removeItem('devOnlineTeam');
+            }
+            initLobby();
+        });
 
         if(currentUser) {
             console.log(`Found active session in localStorage for user: ${currentUser}`);
@@ -706,19 +740,23 @@
 
                 Object.keys(data).forEach(srvId => {
                     const srv = data[srvId];
+                    const item = document.createElement('div');
+                    item.className = 'server-item';
+
                     if(srv.status === 'waiting') {
-                        const item = document.createElement('div');
-                        item.className = 'server-item';
                         item.innerHTML = `<span>Host: <b>${srv.host}</b></span>`;
-                        
                         const joinBtn = document.createElement('button');
                         joinBtn.className = 'btn';
                         joinBtn.textContent = 'Join Match';
                         joinBtn.onclick = () => joinServer(srvId);
-                        
                         item.appendChild(joinBtn);
-                        listEl.appendChild(item);
+                    } else if(srv.status === 'playing') {
+                        // Display match as ongoing, online, and not joinable for 3rd/4th+ players or other users
+                        item.innerHTML = `<span>Host: <b>${srv.host}</b> vs <b>${srv.guest || 'Guest'}</b></span><span style="color:#ffeb3b; font-size:0.75rem; font-weight:bold;">Ongoing / Online</span>`;
+                    } else {
+                        return; // Ignore ended servers
                     }
+                    listEl.appendChild(item);
                 });
             });
         }
@@ -810,12 +848,10 @@
         function triggerMatchEnd(reason) {
             console.log(`Match termination triggered: ${reason}`);
             if (currentServerId) {
-                // Instantly update database node status to 'ended' so opponents are also forced out
                 update(ref(db, `servers/${currentServerId}`), {
                     status: 'ended',
                     reason: `${currentUser} surrendered and left the match.`
                 }).then(() => {
-                    // Cleanly remove room entirely after notifying
                     remove(ref(db, `servers/${currentServerId}`));
                 }).catch(() => {
                     remove(ref(db, `servers/${currentServerId}`));
@@ -866,8 +902,6 @@
 
             setupMatchChat();
 
-            // Coordinate Flipping Helpers for Chess-like Perspective
-            // Blue sees from bottom (y=7 down to y=0), Red sees flipped from bottom (y=0 at bottom up to y=7)
             function boardToScreen(x, y) {
                 if (myTeam === 'red') {
                     return { x: 7 - x, y: 7 - y };
