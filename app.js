@@ -413,11 +413,20 @@ function initLobby() {
 
             if(srv.status === 'waiting') {
                 item.innerHTML = `<span>Host: <b>${srv.host}</b></span>`;
-                const joinBtn = document.createElement('button');
-                joinBtn.className = 'btn';
-                joinBtn.textContent = 'Join Match';
-                joinBtn.onclick = () => joinServer(srvId);
-                item.appendChild(joinBtn);
+                
+                if (srv.host !== currentUser) {
+                    const joinBtn = document.createElement('button');
+                    joinBtn.className = 'btn';
+                    joinBtn.textContent = 'Join Match';
+                    joinBtn.onclick = () => joinServer(srvId);
+                    item.appendChild(joinBtn);
+                } else {
+                    const waitingBadge = document.createElement('span');
+                    waitingBadge.style.color = '#3498db';
+                    waitingBadge.style.fontSize = '0.75rem';
+                    waitingBadge.textContent = 'Your Server (Waiting...)';
+                    item.appendChild(waitingBadge);
+                }
             } else if(srv.status === 'playing') {
                 item.innerHTML = `<span>Host: <b>${srv.host}</b> vs <b>${srv.guest || 'Guest'}</b></span><span style="color:#ffeb3b; font-size:0.75rem;">Ongoing</span>`;
             } else {
@@ -483,9 +492,12 @@ function sendGlobalChatMessage() {
 }
 
 // =========================================================================
-// SERVER CREATION & JOINING ROUTINES (USING 18x18 UNITS)
+// SERVER CREATION & JOINING ROUTINES (FOOLPROOFED)
 // =========================================================================
 document.getElementById('createServerBtn').addEventListener('click', () => {
+    switchScreen('wait');
+    document.getElementById('roomCodeDisplay').textContent = 'Creating server on network...';
+
     const newSrvRef = push(ref(db, 'servers'));
     currentServerId = newSrvRef.key;
     myTeam = 'blue';
@@ -502,10 +514,13 @@ document.getElementById('createServerBtn').addEventListener('click', () => {
         turn: 'blue',
         units: initialUnits
     }).then(() => {
-        console.log(`Server created with ID: ${currentServerId} (18x18 Units Ready)`);
+        console.log(`Server successfully created with ID: ${currentServerId}`);
         document.getElementById('roomCodeDisplay').textContent = `Server ID: ${currentServerId}`;
-        switchScreen('wait');
         listenToMatchState();
+    }).catch((err) => {
+        console.error("Failed to create server:", err);
+        alert("Error creating server. Please try again.");
+        switchScreen('lobby');
     });
 });
 
@@ -520,22 +535,31 @@ document.getElementById('cancelRoomBtn').addEventListener('click', () => {
 });
 
 function joinServer(srvId) {
-    currentServerId = srvId;
-    myTeam = 'red';
+    get(ref(db, `servers/${srvId}`)).then(snapshot => {
+        const srv = snapshot.val();
+        if (srv && srv.host === currentUser) {
+            alert("You cannot join your own created server as a guest!");
+            return;
+        }
 
-    localStorage.setItem('devOnlineServer', currentServerId);
-    localStorage.setItem('devOnlineTeam', myTeam);
+        currentServerId = srvId;
+        myTeam = 'red';
 
-    update(ref(db, `servers/${srvId}`), {
-        guest: currentUser,
-        status: 'playing'
-    }).then(() => {
-        switchScreen('game');
-        startCanvasGame();
+        localStorage.setItem('devOnlineServer', currentServerId);
+        localStorage.setItem('devOnlineTeam', myTeam);
+
+        update(ref(db, `servers/${srvId}`), {
+            guest: currentUser,
+            status: 'playing'
+        }).then(() => {
+            switchScreen('game');
+            startCanvasGame();
+        });
     });
 }
 
 function listenToMatchState() {
+    if (!currentServerId) return;
     onValue(ref(db, `servers/${currentServerId}`), (snapshot) => {
         const srv = snapshot.val();
         if(srv && srv.status === 'playing') {
@@ -573,12 +597,11 @@ function startCanvasGame() {
     console.log("Starting 18x18 Canvas Game Engine loop.");
     const canvas = document.getElementById('gameCanvas');
     
-    // Scale canvas dimensions to 540x540 for 18x18 grid standard
     canvas.width = 540;
     canvas.height = 540;
     
     const ctx = canvas.getContext('2d');
-    const cellSize = canvas.width / COLS; // Exactly 30px per cell
+    const cellSize = canvas.width / COLS;
     let selectedUnit = null;
 
     const srvRef = ref(db, `servers/${currentServerId}`);
@@ -604,7 +627,6 @@ function startCanvasGame() {
     function renderBoardAndUnits(match) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Draw map background image
         if (mapLoaded) {
             ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
         } else {
@@ -612,7 +634,6 @@ function startCanvasGame() {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
-        // Highlight selected unit range overlay
         if(selectedUnit && match.turn === myTeam) {
             ctx.fillStyle = 'rgba(52, 152, 219, 0.35)';
             ctx.fillRect(selectedUnit.x * cellSize, selectedUnit.y * cellSize, cellSize, cellSize);
@@ -630,7 +651,6 @@ function startCanvasGame() {
             }
         }
 
-        // Render all units on the 18x18 map
         if(match.units) {
             match.units.forEach(u => {
                 let uImg = blueTankImg;
@@ -648,7 +668,6 @@ function startCanvasGame() {
                     else if (u.type === 'ship') { uImg = redShipImg; isLoaded = () => redShipLoaded; }
                 }
 
-                // Shadow effect under each unit
                 ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
                 ctx.beginPath();
                 ctx.arc((u.x * cellSize) + cellSize / 2, (u.y * cellSize) + cellSize - 6, cellSize * 0.32, 0, Math.PI * 2);
@@ -664,7 +683,6 @@ function startCanvasGame() {
         }
     }
 
-    // Click handler for 18x18 cell selection & movement sync
     canvas.onclick = (e) => {
         const rect = canvas.getBoundingClientRect();
         const clickX = e.clientX - rect.left;
@@ -695,7 +713,7 @@ function startCanvasGame() {
                             return { ...u, x: gridX, y: gridY };
                         }
                         if (clickedUnit && u.id === clickedUnit.id && u.team !== myTeam) {
-                            return null; // Eliminate enemy unit hit
+                            return null;
                         }
                         return u;
                     }).filter(Boolean);
