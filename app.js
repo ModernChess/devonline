@@ -1,5 +1,4 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { db, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from './firebase-service.js';
 
 // Console Tracking Interceptor
 const consoleLogsEl = document.getElementById('console-logs');
@@ -36,13 +35,6 @@ document.getElementById('clearConsole').onclick = () => {
 };
 
 console.log("Initializing DevOnline Firebase App...");
-
-const firebaseConfig = {
-    databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app/"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
 console.log("Firebase connection established successfully.");
 
 // Unique session token generated per browser instance to prevent simultaneous multi-device logins
@@ -92,7 +84,6 @@ function initPresenceSystem() {
     if (!currentUser) return;
     presenceRef = ref(db, `presence/${currentUser}`);
     
-    // Write our active session token to Firebase presence node
     set(presenceRef, {
         online: true,
         sessionToken: sessionToken,
@@ -100,7 +91,6 @@ function initPresenceSystem() {
     });
     onDisconnect(presenceRef).remove();
 
-    // Heartbeat update
     const heartbeatInterval = setInterval(() => {
         if(currentUser) {
             set(presenceRef, { online: true, sessionToken: sessionToken, lastSeen: serverTimestamp() });
@@ -109,7 +99,6 @@ function initPresenceSystem() {
         }
     }, 10000);
 
-    // Listen to presence node changes to detect if another device logged in with the same account
     if (sessionUnsubscribe) sessionUnsubscribe();
     sessionUnsubscribe = onValue(presenceRef, (snapshot) => {
         const data = snapshot.val();
@@ -119,7 +108,6 @@ function initPresenceSystem() {
         }
     });
 
-    // Global presence list watcher for UI drawer
     onValue(ref(db, 'presence'), (snapshot) => {
         const data = snapshot.val() || {};
         const activeUsers = Object.keys(data);
@@ -153,9 +141,7 @@ function initPresenceSystem() {
 
 function forceSignOutDueToConcurrentLogin(msg) {
     alert(msg);
-    if (presenceRef) {
-        remove(presenceRef);
-    }
+    if (presenceRef) remove(presenceRef);
     if (currentServerId) {
         remove(ref(db, `servers/${currentServerId}`));
         currentServerId = null;
@@ -176,7 +162,6 @@ document.getElementById('loginBtn').addEventListener('click', () => {
     console.log(`Login attempt initiated for username: "${u}"`);
 
     if(validUsers[u] && validUsers[u] === p) {
-        // Check if user is already actively online on another device before granting login
         const targetPresenceRef = ref(db, `presence/${u}`);
         get(targetPresenceRef).then(snapshot => {
             const existingPresence = snapshot.val();
@@ -208,9 +193,7 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 
 function handleLogoutCleanExit() {
     console.log(`User ${currentUser} logging out / exiting.`);
-    if (presenceRef) {
-        remove(presenceRef);
-    }
+    if (presenceRef) remove(presenceRef);
     if (currentServerId) {
         remove(ref(db, `servers/${currentServerId}`));
         currentServerId = null;
@@ -258,9 +241,7 @@ document.getElementById('rejoinNoBtn').addEventListener('click', () => {
         update(ref(db, `servers/${currentServerId}`), {
             status: 'ended',
             reason: `${currentUser} declined to rejoin. Match terminated.`
-        }).then(() => {
-            remove(ref(db, `servers/${currentServerId}`));
-        }).catch(() => {
+        }).finally(() => {
             remove(ref(db, `servers/${currentServerId}`));
         });
         currentServerId = null;
@@ -316,14 +297,11 @@ function initLobby() {
     initGlobalChat();
 }
 
-// Administrative Clear Button Logic (Clears all matches & user-modified data in Firebase)
+// Administrative Clear Button Logic
 document.getElementById('adminClearBtn').addEventListener('click', () => {
     if(confirm("ADMIN ACTION: Are you sure you want to clear all active servers, match data, and universal chat logs from Firebase?")) {
         console.log("Admin clearing all servers and user data nodes in Firebase...");
-        
-        const updates = {};
-        updates['servers'] = null;
-        updates['globalChat'] = null;
+        const updates = { 'servers': null, 'globalChat': null };
 
         update(ref(db), updates).then(() => {
             console.log("All servers and global chat wiped successfully.");
@@ -472,9 +450,7 @@ function triggerMatchEnd(reason) {
         update(ref(db, `servers/${currentServerId}`), {
             status: 'ended',
             reason: `${currentUser} surrendered and left the match.`
-        }).then(() => {
-            remove(ref(db, `servers/${currentServerId}`));
-        }).catch(() => {
+        }).finally(() => {
             remove(ref(db, `servers/${currentServerId}`));
         });
 
