@@ -547,4 +547,184 @@ function startCanvasGame() {
                 ctx.strokeStyle = '#282828';
                 ctx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
             }
-  
+        }
+
+        if(selectedUnit && match.turn === myTeam) {
+            const screenPos = boardToScreen(selectedUnit.x, selectedUnit.y);
+            ctx.fillStyle = 'rgba(33, 150, 243, 0.3)';
+            ctx.fillRect(screenPos.x * tileSize, screenPos.y * tileSize, tileSize, tileSize);
+            
+            for(let dr=-1; dr<=1; dr++) {
+                for(let dc=-1; dc<=1; dc++) {
+                    const nx = selectedUnit.x + dc;
+                    const ny = selectedUnit.y + dr;
+                    if(nx >=0 && nx < 8 && ny >= 0 && ny < 8) {
+                        const sPos = boardToScreen(nx, ny);
+                        ctx.strokeStyle = '#2196F3';
+                        ctx.strokeRect(sPos.x * tileSize, sPos.y * tileSize, tileSize, tileSize);
+                    }
+                }
+            }
+        }
+
+        if(match.units) {
+            match.units.forEach(u => {
+                const sPos = boardToScreen(u.x, u.y);
+                ctx.fillStyle = u.team === 'blue' ? '#2196F3' : '#ff5252';
+                ctx.beginPath();
+                ctx.arc(sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2, tileSize/3, 0, Math.PI*2);
+                ctx.fill();
+
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(u.type === 'tank' ? 'T' : 'I', sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2);
+            });
+        }
+
+        const banner = document.getElementById('statusBanner');
+        const badge = document.getElementById('playerTeamBadge');
+        badge.textContent = `You are: ${myTeam.toUpperCase()} Team`;
+        badge.style.color = myTeam === 'blue' ? '#2196F3' : '#ff5252';
+
+        if(match.turn === myTeam) {
+            banner.textContent = "Your Turn! Click your unit, then click a tile to move.";
+            banner.style.color = "#4CAF50";
+        } else {
+            banner.textContent = `Opponent's Turn (${match.turn.toUpperCase()}). Please wait...`;
+            banner.style.color = "#ffeb3b";
+        }
+    }
+
+    canvas.onclick = (e) => {
+        get(srvRef).then((snapshot) => {
+            const match = snapshot.val();
+            if(!match || match.turn !== myTeam) {
+                console.log("Move rejected: Not your turn or match inactive.");
+                return;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const screenClickX = Math.floor((e.clientX - rect.left) / tileSize);
+            const screenClickY = Math.floor((e.clientY - rect.top) / tileSize);
+
+            const boardCoords = screenToboard(screenClickX, screenClickY);
+            const clickX = boardCoords.x;
+            const clickY = boardCoords.y;
+
+            const clickedUnit = match.units.find(u => u.x === clickX && u.y === clickY && u.team === myTeam);
+
+            if(clickedUnit) {
+                selectedUnit = clickedUnit;
+                console.log(`Unit selected: ${clickedUnit.type} at board (${clickedUnit.x}, ${clickedUnit.y})`);
+                renderBoard(match);
+                return;
+            }
+
+            if(selectedUnit) {
+                const dx = Math.abs(clickX - selectedUnit.x);
+                const dy = Math.abs(clickY - selectedUnit.y);
+
+                if(dx <= 1 && dy <= 1) {
+                    let units = [...match.units];
+                    const targetUnitIndex = units.findIndex(u => u.x === clickX && u.y === clickY);
+
+                    if(targetUnitIndex !== -1) {
+                        const targetUnit = units[targetUnitIndex];
+                        if(targetUnit.team !== myTeam) {
+                            console.log(`Combat triggered between attacker ${selectedUnit.type} and defender ${targetUnit.type}`);
+                            
+                            const getClusterPower = (u, list) => {
+                                let cluster = [u];
+                                let frontier = [u];
+                                while(frontier.length > 0) {
+                                    let current = frontier.pop();
+                                    list.forEach(other => {
+                                        if(other.team === u.team && !cluster.includes(other)) {
+                                            let dist = Math.max(Math.abs(other.x - current.x), Math.abs(other.y - current.y));
+                                            if(dist <= 1) {
+                                                cluster.push(other);
+                                                frontier.push(other);
+                                            }
+                                        }
+                                    });
+                                }
+                                return cluster.reduce((sum, item) => sum + (item.type === 'tank' ? 2 : 1), 0);
+                            };
+
+                            const attackerPower = getClusterPower(selectedUnit, units);
+                            const defenderPower = getClusterPower(targetUnit, units);
+                            console.log(`Combat Power -> Attacker: ${attackerPower} vs Defender: ${defenderPower}`);
+
+                            units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
+
+                            if(attackerPower > defenderPower) {
+                                console.log("Attacker won! Destroying defender unit.");
+                                units = units.filter(u => u.id !== targetUnit.id);
+                            } else if(attackerPower < defenderPower) {
+                                console.log("Defender won! Attacking unit destroyed.");
+                                units = units.filter(u => u.id !== selectedUnit.id);
+                            } else {
+                                console.log("Stalemate power match! Both units eliminated.");
+                                units = units.filter(u => u.id !== targetUnit.id && u.id !== selectedUnit.id);
+                            }
+                        }
+                    } else {
+                        console.log(`Moving unit to empty tile (${clickX}, ${clickY})`);
+                        units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
+                    }
+
+                    const nextTurn = myTeam === 'blue' ? 'red' : 'blue';
+                    selectedUnit = null;
+
+                    console.log(`Updating match state. Turn switching to: ${nextTurn}`);
+                    update(srvRef, {
+                        units: units,
+                        turn: nextTurn
+                    });
+                }
+            }
+        });
+      }); // <--- Fixed: Added missing closing brace and parenthesis here
+}
+
+// Match Chat Logic
+function setupMatchChat() {
+    const chatMessagesEl = document.getElementById('chatMessages');
+    chatMessagesEl.innerHTML = '';
+
+    const chatRef = ref(db, `servers/${currentServerId}/chat`);
+    onValue(chatRef, (snapshot) => {
+        const data = snapshot.val();
+        chatMessagesEl.innerHTML = '';
+        if(!data) return;
+
+        Object.values(data).forEach(msg => {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'chat-msg';
+            msgDiv.innerHTML = `<b>${msg.sender}:</b> ${msg.text}`;
+            chatMessagesEl.appendChild(msgDiv);
+        });
+        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    });
+}
+
+document.getElementById('chatSend').addEventListener('click', sendChatMessage);
+document.getElementById('chatInput').addEventListener('keypress', (e) => {
+    if(e.key === 'Enter') sendChatMessage();
+});
+
+function sendChatMessage() {
+    const input = document.getElementById('chatInput');
+    const msg = input.value.trim();
+    if(!msg || !currentServerId) return;
+
+    console.log(`Sending chat message from ${currentUser}: "${msg}"`);
+    const chatRef = ref(db, `servers/${currentServerId}/chat`);
+    push(chatRef, {
+        sender: currentUser,
+        text: msg
+    });
+    input.value = '';
+}
