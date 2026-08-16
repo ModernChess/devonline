@@ -70,9 +70,15 @@ const redInfantryImg = new Image(); let redInfantryLoaded = false;
 const redArtilleryImg = new Image(); let redArtilleryLoaded = false;
 const redShipImg = new Image(); let redShipLoaded = false;
 
+// Global startup asset gate callback
+let onAllAssetsLoaded = null;
+
 function updateAssetProgress() {
     assetsLoadedCount++;
     console.log(`Loading Assets: ${assetsLoadedCount}/${totalAssets} completed.`);
+    if (assetsLoadedCount >= totalAssets && typeof onAllAssetsLoaded === 'function') {
+        onAllAssetsLoaded();
+    }
 }
 
 function fetchAndLoadAsset(url, imgObj, setFlag) {
@@ -152,7 +158,6 @@ function getPortSquare(team) {
 function generateInitial18x18Units() {
     let units = [];
     
-    // Blue Team Units Setup
     let blueBases = getBaseSquares('blue');
     let bluePort = getPortSquare('blue');
     if (blueBases.length >= 3) {
@@ -162,7 +167,6 @@ function generateInitial18x18Units() {
     }
     units.push({ id: 'b_shp', team: 'blue', type: 'ship', x: bluePort.c, y: bluePort.r });
 
-    // Red Team Units Setup
     let redBases = getBaseSquares('red');
     let redPort = getPortSquare('red');
     if (redBases.length >= 3) {
@@ -206,7 +210,9 @@ const screens = {
 function switchScreen(name) {
     console.log(`Switching view to screen: ${name}`);
     Object.values(screens).forEach(el => el.classList.remove('active'));
-    screens[name].classList.add('active');
+    if (screens[name]) {
+        screens[name].classList.add('active');
+    }
 }
 
 window.addEventListener('beforeunload', (e) => {
@@ -257,24 +263,27 @@ function initPresenceSystem() {
         const countTextEl = document.getElementById('onlineCountText');
         const listEl = document.getElementById('playersListContainer');
 
-        countTextEl.textContent = `Active Players (${count})`;
-        listEl.innerHTML = '';
-
-        if (count === 0) {
-            listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>';
-        } else {
-            activeUsers.forEach(uname => {
-                const card = document.createElement('div');
-                card.className = 'player-card';
-                card.innerHTML = `<span>👤 <b>${uname}</b> ${uname === currentUser ? '(You)' : ''}</span><div class="player-badge-online"></div>`;
-                listEl.appendChild(card);
-            });
+        if (countTextEl) countTextEl.textContent = `Active Players (${count})`;
+        if (listEl) {
+            listEl.innerHTML = '';
+            if (count === 0) {
+                listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>';
+            } else {
+                activeUsers.forEach(uname => {
+                    const card = document.createElement('div');
+                    card.className = 'player-card';
+                    card.innerHTML = `<span>👤 <b>${uname}</b> ${uname === currentUser ? '(You)' : ''}</span><div class="player-badge-online"></div>`;
+                    listEl.appendChild(card);
+                });
+            }
         }
 
-        if (count > 1) {
-            dotEl.classList.add('active-multiple');
-        } else {
-            dotEl.classList.remove('active-multiple');
+        if (dotEl) {
+            if (count > 1) {
+                dotEl.classList.add('active-multiple');
+            } else {
+                dotEl.classList.remove('active-multiple');
+            }
         }
     });
 }
@@ -385,11 +394,6 @@ document.getElementById('rejoinNoBtn').addEventListener('click', () => {
     initLobby();
 });
 
-if(currentUser) {
-    initPresenceSystem();
-    checkExistingMatchReconnection();
-}
-
 function initLobby() {
     document.getElementById('welcomeUser').textContent = `User: ${currentUser}`;
     switchScreen('lobby');
@@ -399,6 +403,7 @@ function initLobby() {
     onValue(serversRef, (snapshot) => {
         const data = snapshot.val();
         const listEl = document.getElementById('serverList');
+        if (!listEl) return;
         listEl.innerHTML = '';
 
         if(!data) {
@@ -457,6 +462,7 @@ function initGlobalChat() {
 
     onValue(globalChatRef, (snapshot) => {
         const data = snapshot.val();
+        if (!globalChatMessagesEl) return;
         globalChatMessagesEl.innerHTML = '';
         if(!data) {
             globalChatMessagesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center; margin-top:30px;">No messages yet.</div>';
@@ -492,7 +498,7 @@ function sendGlobalChatMessage() {
 }
 
 // =========================================================================
-// SERVER CREATION & JOINING ROUTINES (FOOLPROOFED)
+// SERVER CREATION & JOINING ROUTINES (AUTO-TERMINATE WAITING & BULLETPROOF)
 // =========================================================================
 document.getElementById('createServerBtn').addEventListener('click', () => {
     switchScreen('wait');
@@ -506,6 +512,9 @@ document.getElementById('createServerBtn').addEventListener('click', () => {
     localStorage.setItem('devOnlineTeam', myTeam);
 
     const initialUnits = generateInitial18x18Units();
+
+    // Automatically remove/terminate server if host disconnects or leaves while waiting
+    onDisconnect(newSrvRef).remove();
 
     set(newSrvRef, {
         host: currentUser,
@@ -737,3 +746,24 @@ function startCanvasGame() {
         });
     };
 }
+
+// =========================================================================
+// BOOTSTRAP ASSET & SESSION GATE (PREVENTS STARTUP FLASH/GLITCHES)
+// =========================================================================
+onAllAssetsLoaded = () => {
+    console.log("All map and unit assets fully loaded. Initializing dashboard state...");
+    
+    if (currentUser) {
+        initPresenceSystem();
+        checkExistingMatchReconnection();
+    } else {
+        switchScreen('login');
+    }
+};
+
+// Fallback safety trigger in case of cached image fast loads
+setTimeout(() => {
+    if (assetsLoadedCount >= totalAssets && screens.login.classList.contains('active')) {
+        // Already handled
+    }
+}, 500);
