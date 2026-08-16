@@ -1,6 +1,8 @@
-import { db, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from './firebase-service.js';
+Import { db, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from './firebase-service.js';
 
-// Console Tracking Interceptor
+// =========================================================================
+// MODERN CHESS: CONSOLE TRACKING & INTERCEPTOR
+// =========================================================================
 const consoleLogsEl = document.getElementById('console-logs');
 function logToScreen(type, args) {
     const line = document.createElement('div');
@@ -34,17 +36,154 @@ document.getElementById('clearConsole').onclick = () => {
     consoleLogsEl.innerHTML = '';
 };
 
-console.log("Initializing DevOnline Firebase App...");
-console.log("Firebase connection established successfully.");
+console.log("Initializing DevOnline Firebase App with 18x18 Map Framework...");
 
-// Unique session token generated per browser instance to prevent simultaneous multi-device logins
+// =========================================================================
+// 18x18 MAP CONSTANTS & ASSET MANIFEST SETUP
+// =========================================================================
+const COLS = 18;
+const ROWS = 18;
+const GH_BASE = 'https://cdn.jsdelivr.net/gh/ModernChess/assets-images@main/';
+
+const assetManifest = [
+    GH_BASE + 'map2.png',
+    GH_BASE + 'blue_tank.jpg',
+    GH_BASE + 'blue_infantry.jpg',
+    GH_BASE + 'blue_artillery.jpg',
+    GH_BASE + 'blue_ship.jpg',
+    GH_BASE + 'red_tank.jpg',
+    GH_BASE + 'red_infantry.jpg',
+    GH_BASE + 'red_artillery.jpg',
+    GH_BASE + 'red_ship.jpg'
+];
+
+let assetsLoadedCount = 0;
+const totalAssets = assetManifest.length;
+
+const mapImg = new Image(); let mapLoaded = false;
+const blueTankImg = new Image(); let blueTankLoaded = false;
+const blueInfantryImg = new Image(); let blueInfantryLoaded = false;
+const blueArtilleryImg = new Image(); let blueArtilleryLoaded = false;
+const blueShipImg = new Image(); let blueShipLoaded = false;
+const redTankImg = new Image(); let redTankLoaded = false;
+const redInfantryImg = new Image(); let redInfantryLoaded = false;
+const redArtilleryImg = new Image(); let redArtilleryLoaded = false;
+const redShipImg = new Image(); let redShipLoaded = false;
+
+function updateAssetProgress() {
+    assetsLoadedCount++;
+    console.log(`Loading Assets: ${assetsLoadedCount}/${totalAssets} completed.`);
+}
+
+function fetchAndLoadAsset(url, imgObj, setFlag) {
+    fetch(url)
+        .then(res => {
+            if (!res.ok) throw new Error('Network response failure');
+            return res.blob();
+        })
+        .then(blob => {
+            imgObj.src = URL.createObjectURL(blob);
+            imgObj.onload = () => { setFlag(true); updateAssetProgress(); };
+        })
+        .catch(() => {
+            imgObj.src = url;
+            imgObj.onload = () => { setFlag(true); updateAssetProgress(); };
+            imgObj.onerror = () => { updateAssetProgress(); };
+        });
+}
+
+// Trigger asset pipeline loading
+fetchAndLoadAsset(assetManifest[0], mapImg, (v) => mapLoaded = v);
+fetchAndLoadAsset(assetManifest[1], blueTankImg, (v) => blueTankLoaded = v);
+fetchAndLoadAsset(assetManifest[2], blueInfantryImg, (v) => blueInfantryLoaded = v);
+fetchAndLoadAsset(assetManifest[3], blueArtilleryImg, (v) => blueArtilleryLoaded = v);
+fetchAndLoadAsset(assetManifest[4], blueShipImg, (v) => blueShipLoaded = v);
+fetchAndLoadAsset(assetManifest[5], redTankImg, (v) => redTankLoaded = v);
+fetchAndLoadAsset(assetManifest[6], redInfantryImg, (v) => redInfantryLoaded = v);
+fetchAndLoadAsset(assetManifest[7], redArtilleryImg, (v) => redArtilleryLoaded = v);
+fetchAndLoadAsset(assetManifest[8], redShipImg, (v) => redShipLoaded = v);
+
+// 18x18 Terrain Analysis Function
+function getTerrain(c, r) {
+    const colChar = String.fromCharCode(65 + c);
+    const rowNum = r + 1;
+    const coord = colChar + rowNum;
+
+    const waterList = [
+        'I5', 'J5', 'I6', 'J6', 'K6', 'H7', 'I7', 'J7', 'K7', 'G8', 'H8', 'I8', 'J8', 'K8', 
+        'E9', 'F9', 'G9', 'H9', 'I9', 'J9', 'K9', 'L9', 'E10', 'F10', 'G10', 'H10', 'I10', 
+        'J10', 'K10', 'L10', 'F11', 'G11', 'H11', 'I11', 'J11', 'K11', 'L11', 'M11', 'I12', 
+        'J12', 'K12', 'L12', 'M12', 'N12', 'K13', 'L13', 'M13', 'N13', 'L14', 'M14', 'N14'
+    ];
+    if (waterList.includes(coord)) return 'water';
+    if (coord === 'F12') return 'blue_navy';
+    if (coord === 'L6') return 'red_navy';
+    if (coord === 'A12') return 'blue_core';
+    if (['A11', 'B11', 'B12', 'A13', 'B13'].includes(coord)) return 'blue_base';
+    if (coord === 'L1') return 'red_core';
+    if (['K1', 'M1', 'K2', 'L2', 'M2'].includes(coord)) return 'red_base';
+    return 'land';
+}
+
+function getBaseSquares(team) {
+    let list = [];
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            let t = getTerrain(c, r);
+            if (team === 'blue' && (t === 'blue_base' || t === 'blue_core')) list.push({c, r});
+            if (team === 'red' && (t === 'red_base' || t === 'red_core')) list.push({c, r});
+        }
+    }
+    return list;
+}
+
+function getPortSquare(team) {
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            let t = getTerrain(c, r);
+            if (team === 'blue' && t === 'blue_navy') return {c, r};
+            if (team === 'red' && t === 'red_navy') return {c, r};
+        }
+    }
+    return {c: 0, r: 0};
+}
+
+// Generate Full 18x18 Unit Roster for Server Creation
+function generateInitial18x18Units() {
+    let units = [];
+    
+    // Blue Team Units Setup
+    let blueBases = getBaseSquares('blue');
+    let bluePort = getPortSquare('blue');
+    if (blueBases.length >= 3) {
+        units.push({ id: 'b_tank', team: 'blue', type: 'tank', x: blueBases[0].c, y: blueBases[0].r });
+        units.push({ id: 'b_inf', team: 'blue', type: 'infantry', x: blueBases[1].c, y: blueBases[1].r });
+        units.push({ id: 'b_art', team: 'blue', type: 'artillery', x: blueBases[2].c, y: blueBases[2].r });
+    }
+    units.push({ id: 'b_shp', team: 'blue', type: 'ship', x: bluePort.c, y: bluePort.r });
+
+    // Red Team Units Setup
+    let redBases = getBaseSquares('red');
+    let redPort = getPortSquare('red');
+    if (redBases.length >= 3) {
+        units.push({ id: 'r_tank', team: 'red', type: 'tank', x: redBases[0].c, y: redBases[0].r });
+        units.push({ id: 'r_inf', team: 'red', type: 'infantry', x: redBases[1].c, y: redBases[1].r });
+        units.push({ id: 'r_art', team: 'red', type: 'artillery', x: redBases[2].c, y: redBases[2].r });
+    }
+    units.push({ id: 'r_shp', team: 'red', type: 'ship', x: redPort.c, y: redPort.r });
+
+    return units;
+}
+
+// =========================================================================
+// SESSION TOKEN & AUTHENTICATION
+// =========================================================================
 let sessionToken = localStorage.getItem('devOnlineSessionToken');
 if (!sessionToken) {
     sessionToken = 'sess_' + Math.random().toString(36.2) + Date.now().toString(36);
     localStorage.setItem('devOnlineSessionToken', sessionToken);
 }
 
-// 10 Preset Accounts
 const validUsers = {};
 for(let i=1; i<=10; i++) {
     validUsers[`player${i}`] = "123";
@@ -70,7 +209,6 @@ function switchScreen(name) {
     screens[name].classList.add('active');
 }
 
-// Browser Reload / Close Prevention Warning Hook
 window.addEventListener('beforeunload', (e) => {
     if (currentServerId) {
         e.preventDefault();
@@ -79,7 +217,9 @@ window.addEventListener('beforeunload', (e) => {
     }
 });
 
-// Active Player List & Presence System Tracker (with Multi-Device Session Conflict Detection)
+// =========================================================================
+// PRESENCE & CONCURRENT LOGIN TRACKER
+// =========================================================================
 function initPresenceSystem() {
     if (!currentUser) return;
     presenceRef = ref(db, `presence/${currentUser}`);
@@ -103,8 +243,8 @@ function initPresenceSystem() {
     sessionUnsubscribe = onValue(presenceRef, (snapshot) => {
         const data = snapshot.val();
         if (data && data.sessionToken && data.sessionToken !== sessionToken) {
-            console.warn(`Concurrent login detected for user ${currentUser} from another device! Signing out this session.`);
-            forceSignOutDueToConcurrentLogin("Your account was logged in from another device. You have been signed out.");
+            console.warn(`Concurrent login detected for user ${currentUser}! Signing out.`);
+            forceSignOutDueToConcurrentLogin("Your account was logged in from another device.");
         }
     });
 
@@ -153,20 +293,21 @@ function forceSignOutDueToConcurrentLogin(msg) {
     switchScreen('login');
 }
 
-// Login Logic
+// =========================================================================
+// LOGIN & LOBBY ROUTINES
+// =========================================================================
 document.getElementById('loginBtn').addEventListener('click', () => {
     const u = document.getElementById('userInput').value.trim();
     const p = document.getElementById('passInput').value.trim();
     const err = document.getElementById('loginError');
 
-    console.log(`Login attempt initiated for username: "${u}"`);
+    console.log(`Login attempt for username: "${u}"`);
 
     if(validUsers[u] && validUsers[u] === p) {
         const targetPresenceRef = ref(db, `presence/${u}`);
         get(targetPresenceRef).then(snapshot => {
             const existingPresence = snapshot.val();
             if (existingPresence && existingPresence.online) {
-                console.warn(`Login rejected: User ${u} is already active on another device.`);
                 err.textContent = "Error: Account is already logged in on another device!";
                 return;
             }
@@ -174,16 +315,15 @@ document.getElementById('loginBtn').addEventListener('click', () => {
             currentUser = u;
             localStorage.setItem('devOnlineUser', u);
             err.textContent = '';
-            console.log(`Login successful. Welcome user: ${currentUser}`);
+            console.log(`Login successful: ${currentUser}`);
             initPresenceSystem();
             checkExistingMatchReconnection();
         }).catch(err => {
-            console.error("Presence check error during login:", err);
-            err.textContent = "Login verification failed. Try again.";
+            console.error("Presence check error:", err);
+            err.textContent = "Login verification failed.";
         });
     } else {
-        err.textContent = "Invalid account credentials!";
-        console.warn(`Login failed for username: "${u}"`);
+        err.textContent = "Invalid credentials!";
     }
 });
 
@@ -192,7 +332,6 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 });
 
 function handleLogoutCleanExit() {
-    console.log(`User ${currentUser} logging out / exiting.`);
     if (presenceRef) remove(presenceRef);
     if (currentServerId) {
         remove(ref(db, `servers/${currentServerId}`));
@@ -211,14 +350,11 @@ function checkExistingMatchReconnection() {
         return;
     }
 
-    console.log(`Checking if previous server room ${currentServerId} still exists for manual reconnection choice...`);
     get(ref(db, `servers/${currentServerId}`)).then(snapshot => {
         const srv = snapshot.val();
         if (srv && srv.status === 'playing' && (srv.host === currentUser || srv.guest === currentUser)) {
-            console.log("Active saved match found. Prompting player to rejoin or decline.");
             switchScreen('reconnect');
         } else {
-            console.log("Previous match no longer active. Entering lobby.");
             currentServerId = null;
             localStorage.removeItem('devOnlineServer');
             localStorage.removeItem('devOnlineTeam');
@@ -230,17 +366,15 @@ function checkExistingMatchReconnection() {
 }
 
 document.getElementById('rejoinYesBtn').addEventListener('click', () => {
-    console.log(`Player opted to rejoin match ID: ${currentServerId}`);
     switchScreen('game');
     startCanvasGame();
 });
 
 document.getElementById('rejoinNoBtn').addEventListener('click', () => {
-    console.log(`Player opted NOT to rejoin. Terminating match room: ${currentServerId}`);
     if (currentServerId) {
         update(ref(db, `servers/${currentServerId}`), {
             status: 'ended',
-            reason: `${currentUser} declined to rejoin. Match terminated.`
+            reason: `${currentUser} declined to rejoin.`
         }).finally(() => {
             remove(ref(db, `servers/${currentServerId}`));
         });
@@ -252,7 +386,6 @@ document.getElementById('rejoinNoBtn').addEventListener('click', () => {
 });
 
 if(currentUser) {
-    console.log(`Found active session in localStorage for user: ${currentUser}`);
     initPresenceSystem();
     checkExistingMatchReconnection();
 }
@@ -260,7 +393,7 @@ if(currentUser) {
 function initLobby() {
     document.getElementById('welcomeUser').textContent = `User: ${currentUser}`;
     switchScreen('lobby');
-    console.log("Loading server lobby data stream...");
+    console.log("Loading lobby server stream...");
 
     const serversRef = ref(db, 'servers');
     onValue(serversRef, (snapshot) => {
@@ -286,7 +419,7 @@ function initLobby() {
                 joinBtn.onclick = () => joinServer(srvId);
                 item.appendChild(joinBtn);
             } else if(srv.status === 'playing') {
-                item.innerHTML = `<span>Host: <b>${srv.host}</b> vs <b>${srv.guest || 'Guest'}</b></span><span style="color:#ffeb3b; font-size:0.75rem; font-weight:bold;">Ongoing / Online</span>`;
+                item.innerHTML = `<span>Host: <b>${srv.host}</b> vs <b>${srv.guest || 'Guest'}</b></span><span style="color:#ffeb3b; font-size:0.75rem;">Ongoing</span>`;
             } else {
                 return;
             }
@@ -297,27 +430,18 @@ function initLobby() {
     initGlobalChat();
 }
 
-// Administrative Clear Button Logic
 document.getElementById('adminClearBtn').addEventListener('click', () => {
-    if(confirm("ADMIN ACTION: Are you sure you want to clear all active servers, match data, and universal chat logs from Firebase?")) {
-        console.log("Admin clearing all servers and user data nodes in Firebase...");
-        const updates = { 'servers': null, 'globalChat': null };
-
-        update(ref(db), updates).then(() => {
-            console.log("All servers and global chat wiped successfully.");
+    if(confirm("Clear all active servers and global chat?")) {
+        update(ref(db), { 'servers': null, 'globalChat': null }).then(() => {
             currentServerId = null;
             localStorage.removeItem('devOnlineServer');
             localStorage.removeItem('devOnlineTeam');
-            alert("All matches and chat data have been cleared successfully.");
+            alert("Cleared successfully.");
             initLobby();
-        }).catch(err => {
-            console.error("Failed to clear Firebase data:", err);
-            alert("Error clearing data: " + err.message);
         });
     }
 });
 
-// Universal Global Chat System
 function initGlobalChat() {
     const globalChatMessagesEl = document.getElementById('globalChatMessages');
     const globalChatRef = ref(db, 'globalChat');
@@ -326,7 +450,7 @@ function initGlobalChat() {
         const data = snapshot.val();
         globalChatMessagesEl.innerHTML = '';
         if(!data) {
-            globalChatMessagesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center; margin-top:30px;">No messages in global chat yet. Say hi!</div>';
+            globalChatMessagesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.75rem; text-align:center; margin-top:30px;">No messages yet.</div>';
             return;
         }
 
@@ -350,9 +474,7 @@ function sendGlobalChatMessage() {
     const msg = input.value.trim();
     if(!msg || !currentUser) return;
 
-    console.log(`Sending global chat message from ${currentUser}: "${msg}"`);
-    const globalChatRef = ref(db, 'globalChat');
-    push(globalChatRef, {
+    push(ref(db, 'globalChat'), {
         sender: currentUser,
         text: msg,
         timestamp: serverTimestamp()
@@ -360,9 +482,10 @@ function sendGlobalChatMessage() {
     input.value = '';
 }
 
-// Create Server
+// =========================================================================
+// SERVER CREATION & JOINING ROUTINES (USING 18x18 UNITS)
+// =========================================================================
 document.getElementById('createServerBtn').addEventListener('click', () => {
-    console.log(`User ${currentUser} is creating a new server instance...`);
     const newSrvRef = push(ref(db, 'servers'));
     currentServerId = newSrvRef.key;
     myTeam = 'blue';
@@ -370,14 +493,7 @@ document.getElementById('createServerBtn').addEventListener('click', () => {
     localStorage.setItem('devOnlineServer', currentServerId);
     localStorage.setItem('devOnlineTeam', myTeam);
 
-    const initialUnits = [
-        { id: 'b1', team: 'blue', type: 'tank', x: 1, y: 7 },
-        { id: 'b2', team: 'blue', type: 'infantry', x: 3, y: 7 },
-        { id: 'b3', team: 'blue', type: 'infantry', x: 6, y: 7 },
-        { id: 'r1', team: 'red', type: 'infantry', x: 1, y: 0 },
-        { id: 'r2', team: 'red', type: 'infantry', x: 4, y: 0 },
-        { id: 'r3', team: 'red', type: 'tank', x: 6, y: 0 }
-    ];
+    const initialUnits = generateInitial18x18Units();
 
     set(newSrvRef, {
         host: currentUser,
@@ -386,18 +502,15 @@ document.getElementById('createServerBtn').addEventListener('click', () => {
         turn: 'blue',
         units: initialUnits
     }).then(() => {
-        console.log(`Server successfully created with ID: ${currentServerId} (Host assigned Blue Team)`);
+        console.log(`Server created with ID: ${currentServerId} (18x18 Units Ready)`);
         document.getElementById('roomCodeDisplay').textContent = `Server ID: ${currentServerId}`;
         switchScreen('wait');
         listenToMatchState();
-    }).catch(err => {
-        console.error("Error creating server:", err);
     });
 });
 
 document.getElementById('cancelRoomBtn').addEventListener('click', () => {
     if(currentServerId) {
-        console.log(`Cancelling server room ${currentServerId}`);
         remove(ref(db, `servers/${currentServerId}`));
         currentServerId = null;
         localStorage.removeItem('devOnlineServer');
@@ -413,43 +526,34 @@ function joinServer(srvId) {
     localStorage.setItem('devOnlineServer', currentServerId);
     localStorage.setItem('devOnlineTeam', myTeam);
 
-    console.log(`User ${currentUser} joining server ${srvId} as Red Team guest.`);
-
     update(ref(db, `servers/${srvId}`), {
         guest: currentUser,
         status: 'playing'
     }).then(() => {
-        console.log("Successfully joined match. Starting game canvas interface.");
         switchScreen('game');
         startCanvasGame();
-    }).catch(err => {
-        console.error("Error joining server:", err);
     });
 }
 
 function listenToMatchState() {
-    const srvRef = ref(db, `servers/${currentServerId}`);
-    onValue(srvRef, (snapshot) => {
+    onValue(ref(db, `servers/${currentServerId}`), (snapshot) => {
         const srv = snapshot.val();
         if(srv && srv.status === 'playing') {
-            console.log("Opponent joined! Match starting status triggered.");
             switchScreen('game');
             startCanvasGame();
         }
     });
 }
 
-// Absolute Surrender / Leave Match Handler
 document.getElementById('surrenderBtn').addEventListener('click', () => {
-    triggerMatchEnd("You surrendered or left the match.");
+    triggerMatchEnd("You left or surrendered the match.");
 });
 
 function triggerMatchEnd(reason) {
-    console.log(`Match termination triggered: ${reason}`);
     if (currentServerId) {
         update(ref(db, `servers/${currentServerId}`), {
             status: 'ended',
-            reason: `${currentUser} surrendered and left the match.`
+            reason: `${currentUser} left the match.`
         }).finally(() => {
             remove(ref(db, `servers/${currentServerId}`));
         });
@@ -462,21 +566,27 @@ function triggerMatchEnd(reason) {
     initLobby();
 }
 
-// Canvas Game Logic & Realtime Listeners
+// =========================================================================
+// 18x18 CANVAS GAME ENGINE & REALTIME RENDERING
+// =========================================================================
 function startCanvasGame() {
-    console.log("Canvas game loop initialized.");
+    console.log("Starting 18x18 Canvas Game Engine loop.");
     const canvas = document.getElementById('gameCanvas');
+    
+    // Scale canvas dimensions to 540x540 for 18x18 grid standard
+    canvas.width = 540;
+    canvas.height = 540;
+    
     const ctx = canvas.getContext('2d');
-    const tileSize = 40;
+    const cellSize = canvas.width / COLS; // Exactly 30px per cell
     let selectedUnit = null;
 
     const srvRef = ref(db, `servers/${currentServerId}`);
     
     onValue(srvRef, (snapshot) => {
         const match = snapshot.val();
-        if(!match) {
-            console.warn("Match data missing or room deleted.");
-            alert("The match was ended or the opponent left.");
+        if(!match || match.status === 'ended') {
+            alert(match?.reason || "Match ended or opponent left.");
             currentServerId = null;
             localStorage.removeItem('devOnlineServer');
             localStorage.removeItem('devOnlineTeam');
@@ -484,223 +594,128 @@ function startCanvasGame() {
             return;
         }
 
-        if(match.status === 'ended') {
-            console.warn("Match ended by server notice.");
-            alert(match.reason || "Match ended!");
-            currentServerId = null;
-            localStorage.removeItem('devOnlineServer');
-            localStorage.removeItem('devOnlineTeam');
-            initLobby();
-            return;
-        }
-
-        renderBoard(match);
+        renderBoardAndUnits(match);
     });
 
-    setupMatchChat();
-
-    function boardToScreen(x, y) {
-        if (myTeam === 'red') {
-            return { x: 7 - x, y: 7 - y };
-        }
-        return { x: x, y: y };
+    if (typeof setupMatchChat === 'function') {
+        setupMatchChat();
     }
 
-    function screenToboard(sx, sy) {
-        if (myTeam === 'red') {
-            return { x: 7 - sx, y: 7 - sy };
-        }
-        return { x: sx, y: sy };
-    }
+    function renderBoardAndUnits(match) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    function renderBoard(match) {
-        ctx.clearRect(0, 0, 320, 320);
-
-        for(let r=0; r<8; r++) {
-            for(let c=0; c<8; c++) {
-                ctx.fillStyle = (r + c) % 2 === 0 ? '#1e1e1e' : '#161616';
-                ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
-                ctx.strokeStyle = '#282828';
-                ctx.strokeRect(c * tileSize, r * tileSize, tileSize, tileSize);
-            }
+        // Draw map background image
+        if (mapLoaded) {
+            ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
+        } else {
+            ctx.fillStyle = '#16161c';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
+        // Highlight selected unit range overlay
         if(selectedUnit && match.turn === myTeam) {
-            const screenPos = boardToScreen(selectedUnit.x, selectedUnit.y);
-            ctx.fillStyle = 'rgba(33, 150, 243, 0.3)';
-            ctx.fillRect(screenPos.x * tileSize, screenPos.y * tileSize, tileSize, tileSize);
+            ctx.fillStyle = 'rgba(52, 152, 219, 0.35)';
+            ctx.fillRect(selectedUnit.x * cellSize, selectedUnit.y * cellSize, cellSize, cellSize);
             
-            for(let dr=-1; dr<=1; dr++) {
-                for(let dc=-1; dc<=1; dc++) {
+            for(let dr = -1; dr <= 1; dr++) {
+                for(let dc = -1; dc <= 1; dc++) {
                     const nx = selectedUnit.x + dc;
                     const ny = selectedUnit.y + dr;
-                    if(nx >=0 && nx < 8 && ny >= 0 && ny < 8) {
-                        const sPos = boardToScreen(nx, ny);
-                        ctx.strokeStyle = '#2196F3';
-                        ctx.strokeRect(sPos.x * tileSize, sPos.y * tileSize, tileSize, tileSize);
+                    if(nx >= 0 && nx < COLS && ny >= 0 && ny < ROWS) {
+                        ctx.strokeStyle = '#3498db';
+                        ctx.lineWidth = 1.5;
+                        ctx.strokeRect(nx * cellSize, ny * cellSize, cellSize, cellSize);
                     }
                 }
             }
         }
 
+        // Render all units on the 18x18 map
         if(match.units) {
             match.units.forEach(u => {
-                const sPos = boardToScreen(u.x, u.y);
-                ctx.fillStyle = u.team === 'blue' ? '#2196F3' : '#ff5252';
+                let uImg = blueTankImg;
+                let isLoaded = () => false;
+
+                if (u.team === 'blue') {
+                    if (u.type === 'tank') { uImg = blueTankImg; isLoaded = () => blueTankLoaded; }
+                    else if (u.type === 'infantry') { uImg = blueInfantryImg; isLoaded = () => blueInfantryLoaded; }
+                    else if (u.type === 'artillery') { uImg = blueArtilleryImg; isLoaded = () => blueArtilleryLoaded; }
+                    else if (u.type === 'ship') { uImg = blueShipImg; isLoaded = () => blueShipLoaded; }
+                } else {
+                    if (u.type === 'tank') { uImg = redTankImg; isLoaded = () => redTankLoaded; }
+                    else if (u.type === 'infantry') { uImg = redInfantryImg; isLoaded = () => redInfantryLoaded; }
+                    else if (u.type === 'artillery') { uImg = redArtilleryImg; isLoaded = () => redArtilleryLoaded; }
+                    else if (u.type === 'ship') { uImg = redShipImg; isLoaded = () => redShipLoaded; }
+                }
+
+                // Shadow effect under each unit
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
                 ctx.beginPath();
-                ctx.arc(sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2, tileSize/3, 0, Math.PI*2);
+                ctx.arc((u.x * cellSize) + cellSize / 2, (u.y * cellSize) + cellSize - 6, cellSize * 0.32, 0, Math.PI * 2);
                 ctx.fill();
 
-                ctx.fillStyle = '#fff';
-                ctx.font = 'bold 12px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(u.type === 'tank' ? 'T' : 'I', sPos.x * tileSize + tileSize/2, sPos.y * tileSize + tileSize/2);
+                if (isLoaded()) {
+                    ctx.drawImage(uImg, (u.x * cellSize) + 1, (u.y * cellSize) + 1, cellSize - 2, cellSize - 2);
+                } else {
+                    ctx.fillStyle = u.team === 'blue' ? '#3498db' : '#e74c3c';
+                    ctx.fillRect(u.x * cellSize + 4, u.y * cellSize + 4, cellSize - 8, cellSize - 8);
+                }
             });
-        }
-
-        const banner = document.getElementById('statusBanner');
-        const badge = document.getElementById('playerTeamBadge');
-        badge.textContent = `You are: ${myTeam.toUpperCase()} Team`;
-        badge.style.color = myTeam === 'blue' ? '#2196F3' : '#ff5252';
-
-        if(match.turn === myTeam) {
-            banner.textContent = "Your Turn! Click your unit, then click a tile to move.";
-            banner.style.color = "#4CAF50";
-        } else {
-            banner.textContent = `Opponent's Turn (${match.turn.toUpperCase()}). Please wait...`;
-            banner.style.color = "#ffeb3b";
         }
     }
 
+    // Click handler for 18x18 cell selection & movement sync
     canvas.onclick = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        const gridX = Math.floor(clickX / cellSize);
+        const gridY = Math.floor(clickY / cellSize);
+
         get(srvRef).then((snapshot) => {
             const match = snapshot.val();
-            if(!match || match.turn !== myTeam) {
-                console.log("Move rejected: Not your turn or match inactive.");
-                return;
-            }
+            if (!match || match.turn !== myTeam) return;
 
-            const rect = canvas.getBoundingClientRect();
-            const screenClickX = Math.floor((e.clientX - rect.left) / tileSize);
-            const screenClickY = Math.floor((e.clientY - rect.top) / tileSize);
+            let units = match.units || [];
+            let clickedUnit = units.find(u => u.x === gridX && u.y === gridY);
 
-            const boardCoords = screenToboard(screenClickX, screenClickY);
-            const clickX = boardCoords.x;
-            const clickY = boardCoords.y;
+            if (selectedUnit) {
+                if (clickedUnit && clickedUnit.team === myTeam) {
+                    selectedUnit = clickedUnit;
+                    return;
+                }
 
-            const clickedUnit = match.units.find(u => u.x === clickX && u.y === clickY && u.team === myTeam);
+                let dx = Math.abs(selectedUnit.x - gridX);
+                let dy = Math.abs(selectedUnit.y - gridY);
 
-            if(clickedUnit) {
-                selectedUnit = clickedUnit;
-                console.log(`Unit selected: ${clickedUnit.type} at board (${clickedUnit.x}, ${clickedUnit.y})`);
-                renderBoard(match);
-                return;
-            }
-
-            if(selectedUnit) {
-                const dx = Math.abs(clickX - selectedUnit.x);
-                const dy = Math.abs(clickY - selectedUnit.y);
-
-                if(dx <= 1 && dy <= 1) {
-                    let units = [...match.units];
-                    const targetUnitIndex = units.findIndex(u => u.x === clickX && u.y === clickY);
-
-                    if(targetUnitIndex !== -1) {
-                        const targetUnit = units[targetUnitIndex];
-                        if(targetUnit.team !== myTeam) {
-                            console.log(`Combat triggered between attacker ${selectedUnit.type} and defender ${targetUnit.type}`);
-                            
-                            const getClusterPower = (u, list) => {
-                                let cluster = [u];
-                                let frontier = [u];
-                                while(frontier.length > 0) {
-                                    let current = frontier.pop();
-                                    list.forEach(other => {
-                                        if(other.team === u.team && !cluster.includes(other)) {
-                                            let dist = Math.max(Math.abs(other.x - current.x), Math.abs(other.y - current.y));
-                                            if(dist <= 1) {
-                                                cluster.push(other);
-                                                frontier.push(other);
-                                            }
-                                        }
-                                    });
-                                }
-                                return cluster.reduce((sum, item) => sum + (item.type === 'tank' ? 2 : 1), 0);
-                            };
-
-                            const attackerPower = getClusterPower(selectedUnit, units);
-                            const defenderPower = getClusterPower(targetUnit, units);
-                            console.log(`Combat Power -> Attacker: ${attackerPower} vs Defender: ${defenderPower}`);
-
-                            units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
-
-                            if(attackerPower > defenderPower) {
-                                console.log("Attacker won! Destroying defender unit.");
-                                units = units.filter(u => u.id !== targetUnit.id);
-                            } else if(attackerPower < defenderPower) {
-                                console.log("Defender won! Attacking unit destroyed.");
-                                units = units.filter(u => u.id !== selectedUnit.id);
-                            } else {
-                                console.log("Stalemate power match! Both units eliminated.");
-                                units = units.filter(u => u.id !== targetUnit.id && u.id !== selectedUnit.id);
-                            }
+                if (dx <= 1 && dy <= 1) {
+                    let updatedUnits = units.map(u => {
+                        if (u.id === selectedUnit.id) {
+                            return { ...u, x: gridX, y: gridY };
                         }
-                    } else {
-                        console.log(`Moving unit to empty tile (${clickX}, ${clickY})`);
-                        units = units.map(u => u.id === selectedUnit.id ? { ...u, x: clickX, y: clickY } : u);
-                    }
+                        if (clickedUnit && u.id === clickedUnit.id && u.team !== myTeam) {
+                            return null; // Eliminate enemy unit hit
+                        }
+                        return u;
+                    }).filter(Boolean);
 
-                    const nextTurn = myTeam === 'blue' ? 'red' : 'blue';
-                    selectedUnit = null;
+                    let nextTurn = (myTeam === 'blue') ? 'red' : 'blue';
 
-                    console.log(`Updating match state. Turn switching to: ${nextTurn}`);
                     update(srvRef, {
-                        units: units,
+                        units: updatedUnits,
                         turn: nextTurn
+                    }).then(() => {
+                        selectedUnit = null;
                     });
+                } else {
+                    selectedUnit = null;
+                }
+            } else {
+                if (clickedUnit && clickedUnit.team === myTeam) {
+                    selectedUnit = clickedUnit;
                 }
             }
         });
     };
-}
-
-// Match Chat Logic
-function setupMatchChat() {
-    const chatMessagesEl = document.getElementById('chatMessages');
-    chatMessagesEl.innerHTML = '';
-
-    const chatRef = ref(db, `servers/${currentServerId}/chat`);
-    onValue(chatRef, (snapshot) => {
-        const data = snapshot.val();
-        chatMessagesEl.innerHTML = '';
-        if(!data) return;
-
-        Object.values(data).forEach(msg => {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = 'chat-msg';
-            msgDiv.innerHTML = `<b>${msg.sender}:</b> ${msg.text}`;
-            chatMessagesEl.appendChild(msgDiv);
-        });
-        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-    });
-}
-
-document.getElementById('chatSend').addEventListener('click', sendChatMessage);
-document.getElementById('chatInput').addEventListener('keypress', (e) => {
-    if(e.key === 'Enter') sendChatMessage();
-});
-
-function sendChatMessage() {
-    const input = document.getElementById('chatInput');
-    const msg = input.value.trim();
-    if(!msg || !currentServerId) return;
-
-    console.log(`Sending chat message from ${currentUser}: "${msg}"`);
-    const chatRef = ref(db, `servers/${currentServerId}/chat`);
-    push(chatRef, {
-        sender: currentUser,
-        text: msg
-    });
-    input.value = '';
 }
