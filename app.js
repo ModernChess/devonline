@@ -686,7 +686,7 @@ function startCanvasGame() {
                 }
             }
         });
-      }); // <--- Fixed: Added missing closing brace and parenthesis here
+    };
 }
 
 // Match Chat Logic
