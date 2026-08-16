@@ -1,4 +1,4 @@
-Import { db, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from './firebase-service.js';
+import { db, ref, set, onValue, push, remove, update, get, onDisconnect, serverTimestamp } from './firebase-service.js';
 
 // =========================================================================
 // MODERN CHESS: CONSOLE TRACKING & INTERCEPTOR
