@@ -1,388 +1,508 @@
-// ==========================================
-// GAME CLIENT & UI MODULE (game.js)
-// ==========================================
+// game.js - Main Controller, UI, and Game Logic
+import { db, ref, set, get, update, remove, onValue, push, setupUserPresence, markUserOffline } from './network.js';
 
-import { 
-    logMessage, setPresence, listenPresence, checkExistingRooms, 
-    removeRoom, removeAllRooms, listenRooms, createNewRoom, 
-    listenRoomChanges, joinServerRoom, sendGlobalMessage, 
-    listenGlobalChat, sendMatchMessage, listenMatchChat, 
-    executeMoveTransaction 
-} from './network.js';
-
+// Global Game State
 let currentUser = null;
-let currentRoomId = null;
-let userTeam = null; 
-let boardState = null;
-let selectedSquare = null;
-let localTurn = 'white';
-let gameActive = false;
+let currentServerId = null;
+let currentMatchId = null;
+let playerTeam = null; // 'white' (red) or 'black' (blue)
+let gameInterval = null;
 
-const BOARD_SIZE = 18;
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-
-const screens = {
-    login: document.getElementById('login-screen'),
-    reconnect: document.getElementById('reconnect-screen'),
-    lobby: document.getElementById('lobby-screen'),
-    wait: document.getElementById('wait-screen'),
-    game: document.getElementById('game-screen')
+// Preset Accounts for validation
+const validAccounts = {
+    "player1": "123", "player2": "123", "player3": "123", "player4": "123",
+    "player5": "123", "player6": "123", "player7": "123", "player8": "123",
+    "player9": "123", "player10": "123"
 };
 
-function showScreen(screenKey) {
-    Object.keys(screens).forEach(key => {
-        if (screens[key]) {
-            screens[key].classList.toggle('active', key === screenKey);
-        }
-    });
-    logMessage(`Switched view to screen: ${screenKey}`);
+// Console logger helper
+function logToConsole(msg) {
+    const logs = document.getElementById('console-logs');
+    if (!logs) return;
+    const time = new Date().toLocaleTimeString();
+    logs.innerHTML += `[${time}] ${msg}<br>`;
+    logs.scrollTop = logs.scrollHeight;
 }
 
-// ------------------------------------------
-// AUTHENTICATION & PRESENCE
-// ------------------------------------------
-const userInput = document.getElementById('userInput');
-const passInput = document.getElementById('passInput');
-const loginBtn = document.getElementById('loginBtn');
-const loginError = document.getElementById('loginError');
-const logoutBtn = document.getElementById('logoutBtn');
-const welcomeUser = document.getElementById('welcomeUser');
+window.addEventListener('DOMContentLoaded', () => {
+    logToConsole("DOM fully loaded. Initializing application...");
+    initEventListeners();
+    checkCachedSession();
+    listenToActivePlayers();
+    listenToGlobalChat();
 
-loginBtn.addEventListener('click', async () => {
-    const username = userInput.value.trim().toLowerCase();
-    const password = passInput.value.trim();
+    document.getElementById('clearConsole').addEventListener('click', () => {
+        document.getElementById('console-logs').innerHTML = '';
+    });
+});
 
-    if (!username || !password) {
-        loginError.textContent = "Please enter username and password.";
-        return;
-    }
-
-    if (/^player([1-9]|10)$/.test(username) && password === '123') {
-        currentUser = username;
-        loginError.textContent = "";
+// --- LOCAL STORAGE CACHE & AUTO-LOGIN ---
+function checkCachedSession() {
+    const savedUser = localStorage.getItem('chess_current_user');
+    if (savedUser && validAccounts[savedUser]) {
+        currentUser = savedUser;
+        logToConsole(`Auto-logged in via cache as: ${currentUser}`);
         setupUserPresence(currentUser);
-        checkActiveSession(currentUser);
+        showScreen('lobby-screen');
+        document.getElementById('welcomeUser').innerText = `Logged in as: ${currentUser}`;
+        loadServerList();
     } else {
-        loginError.textContent = "Invalid username or password (try player1 / 123)";
+        logToConsole("No active session in cache. Showing login screen.");
+        showScreen('login-screen');
     }
-});
+}
 
-logoutBtn.addEventListener('click', () => {
-    if (currentUser) {
-        setPresence(currentUser, { online: false, lastSeen: Date.now() });
-    }
-    currentUser = null;
-    currentRoomId = null;
-    userTeam = null;
-    showScreen('login');
-});
+function showScreen(screenId) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    const target = document.getElementById(screenId);
+    if (target) target.classList.add('active');
+    logToConsole(`Switched active screen to: ${screenId}`);
+}
 
-function setupUserPresence(username) {
-    setPresence(username, { online: true, lastSeen: Date.now() });
+// --- EVENT LISTENERS SETUP ---
+function initEventListeners() {
+    // Login Button
+    document.getElementById('loginBtn').addEventListener('click', () => {
+        const u = document.getElementById('userInput').value.trim();
+        const p = document.getElementById('passInput').value.trim();
+        const err = document.getElementById('loginError');
 
-    listenPresence((data) => {
-        const activePlayers = Object.keys(data).filter(user => data[user].online);
-        
-        const countText = document.getElementById('onlineCountText');
-        const statusDot = document.getElementById('statusDot');
+        if (!validAccounts[u] || validAccounts[u] !== p) {
+            err.innerText = "Invalid username or password!";
+            logToConsole(`Login failed for username: ${u}`);
+            return;
+        }
+        err.innerText = "";
+        currentUser = u;
+
+        // Save to Local Storage cache
+        localStorage.setItem('chess_current_user', currentUser);
+
+        // Activate Firebase Presence
+        setupUserPresence(currentUser);
+
+        showScreen('lobby-screen');
+        document.getElementById('welcomeUser').innerText = `Logged in as: ${currentUser}`;
+        loadServerList();
+        logToConsole(`User ${currentUser} logged in successfully.`);
+    });
+
+    // Logout Button
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        markUserOffline(currentUser);
+        localStorage.removeItem('chess_current_user');
+        logToConsole(`User ${currentUser} logged out.`);
+        currentUser = null;
+        showScreen('login-screen');
+    });
+
+    // Create Server Button
+    document.getElementById('createServerBtn').addEventListener('click', createNewServer);
+
+    // Cancel Waiting Room Button
+    document.getElementById('cancelRoomBtn').addEventListener('click', () => {
+        if (currentServerId) {
+            remove(ref(db, `servers/${currentServerId}`));
+            currentServerId = null;
+        }
+        showScreen('lobby-screen');
+        logToConsole("Server creation canceled. Returned to lobby.");
+    });
+
+    // Global Lobby Chat Send
+    document.getElementById('globalChatSend').addEventListener('click', sendGlobalMessage);
+    document.getElementById('globalChatInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendGlobalMessage();
+    });
+
+    // Match Surrender Button
+    document.getElementById('surrenderBtn').addEventListener('click', () => {
+        if (confirm("Are you sure you want to surrender and leave the match?")) {
+            leaveMatch();
+        }
+    });
+
+    // Admin Clear Button
+    document.getElementById('adminClearBtn').addEventListener('click', () => {
+        if (confirm("Admin: Clear all active servers and matches?")) {
+            remove(ref(db, 'servers'));
+            remove(ref(db, 'matches'));
+            logToConsole("Admin cleared all servers and matches.");
+        }
+    });
+}
+
+// --- ACTIVE PLAYERS LIST (Excludes offline/closed tabs) ---
+function listenToActivePlayers() {
+    const playersRef = ref(db, 'players');
+    onValue(playersRef, (snapshot) => {
+        const data = snapshot.val() || {};
         const container = document.getElementById('playersListContainer');
+        container.innerHTML = '';
 
-        if (countText) countText.textContent = `Active Players (${activePlayers.length})`;
-        if (statusDot) statusDot.classList.toggle('active-multiple', activePlayers.length > 1);
+        let onlineCount = 0;
+        let htmlContent = '';
 
-        if (container) {
-            container.innerHTML = activePlayers.length === 0 
-                ? `<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>`
-                : activePlayers.map(p => `
+        for (let username in data) {
+            const info = data[username];
+            // Only list users whose status is explicitly online: true
+            if (info && info.online === true) {
+                onlineCount++;
+                const isYou = username === currentUser ? ' (You)' : '';
+                htmlContent += `
                     <div class="player-card">
-                        <span>${p} ${p === currentUser ? '(You)' : ''}</span>
+                        <span>${username}${isYou}</span>
                         <div class="player-badge-online"></div>
                     </div>
-                  `).join('');
+                `;
+            }
+        }
+
+        if (onlineCount === 0) {
+            container.innerHTML = `<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>`;
+        } else {
+            container.innerHTML = htmlContent;
+        }
+
+        document.getElementById('onlineCountText').innerText = `Active Players (${onlineCount})`;
+        const dot = document.getElementById('statusDot');
+        if (onlineCount > 1) {
+            dot.classList.add('active-multiple');
+        } else {
+            dot.classList.remove('active-multiple');
         }
     });
 }
 
-async function checkActiveSession(username) {
-    welcomeUser.textContent = `Logged in as: ${username}`;
-    const foundRoomId = await checkActiveSessionHelper(username);
+// --- GLOBAL LOBBY CHAT ---
+function sendGlobalMessage() {
+    const input = document.getElementById('globalChatInput');
+    const text = input.value.trim();
+    if (!text || !currentUser) return;
 
-    if (foundRoomId) {
-        currentRoomId = foundRoomId;
-        showScreen('reconnect');
-    } else {
-        showScreen('lobby');
-        initLobbySystem();
-    }
-}
-
-async function checkActiveSessionHelper(username) {
-    return await checkExistingRooms(username);
-}
-
-document.getElementById('rejoinYesBtn').addEventListener('click', () => joinRoomSession(currentRoomId));
-document.getElementById('rejoinNoBtn').addEventListener('click', async () => {
-    if (currentRoomId) await removeRoom(currentRoomId);
-    currentRoomId = null;
-    showScreen('lobby');
-    initLobbySystem();
-});
-
-// ------------------------------------------
-// LOBBY & GLOBAL CHAT
-// ------------------------------------------
-const serverListContainer = document.getElementById('serverList');
-const createServerBtn = document.getElementById('createServerBtn');
-const adminClearBtn = document.getElementById('adminClearBtn');
-
-function initLobbySystem() {
-    listenRooms((data) => {
-        const openRooms = Object.entries(data).filter(([id, room]) => room.status === 'waiting');
-
-        serverListContainer.innerHTML = openRooms.length === 0 
-            ? `<div style="color:var(--text-muted); font-size:0.8rem; text-align:center; margin-top:20px;">No servers active. Create one!</div>`
-            : openRooms.map(([roomId, room]) => `
-                <div class="server-item">
-                    <span>Host: <b>${room.host}</b></span>
-                    <button class="btn btn-secondary" onclick="window.joinGameServer('${roomId}')">Join</button>
-                </div>
-              `).join('');
+    const chatRef = ref(db, 'globalChat');
+    push(chatRef, {
+        sender: currentUser,
+        text: text,
+        timestamp: Date.now()
     });
-    initGlobalChat();
+    input.value = '';
 }
 
-createServerBtn.addEventListener('click', async () => {
-    userTeam = 'white';
+function listenToGlobalChat() {
+    const chatRef = ref(db, 'globalChat');
+    onValue(chatRef, (snapshot) => {
+        const data = snapshot.val() || {};
+        const container = document.getElementById('globalChatMessages');
+        container.innerHTML = '';
 
-    const roomData = {
+        const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
+        // Keep last 30 messages
+        const recent = messages.slice(-30);
+
+        recent.forEach(msg => {
+            const div = document.createElement('div');
+            div.className = 'global-chat-msg';
+            div.innerHTML = `<strong>${msg.sender}:</strong> ${escapeHtml(msg.text)}`;
+            container.appendChild(div);
+        });
+        container.scrollTop = container.scrollHeight;
+    });
+}
+
+// --- LOBBY & SERVER CREATION ---
+function createNewServer() {
+    if (!currentUser) return;
+    const serversRef = ref(db, 'servers');
+    const newServerRef = push(serversRef);
+    currentServerId = newServerRef.key;
+
+    set(newServerRef, {
         host: currentUser,
         guest: null,
         status: 'waiting',
-        turn: 'white',
-        board: getInitialBoardState()
-    };
+        createdAt: Date.now()
+    });
 
-    currentRoomId = await createNewRoom(roomData);
-    document.getElementById('roomCodeDisplay').textContent = `Room ID: ${currentRoomId}`;
-    showScreen('wait');
+    logToConsole(`Created server ID: ${currentServerId} by host ${currentUser}`);
+    document.getElementById('roomCodeDisplay').innerText = `Server ID: ${currentServerId}`;
+    showScreen('wait-screen');
 
-    listenRoomChanges(currentRoomId, (room) => {
-        if (room && room.guest && room.status === 'playing') {
-            joinRoomSession(currentRoomId);
+    // Listen to changes on this specific server to detect when a guest joins
+    onValue(newServerRef, (snapshot) => {
+        const data = snapshot.val();
+        if (!data) return;
+        if (data.status === 'playing' && data.matchId) {
+            currentMatchId = data.matchId;
+            playerTeam = 'white'; // Host is White/Red team
+            startGameSession();
         }
     });
-});
+}
 
-window.joinGameServer = async (roomId) => {
-    const assignedTeam = await joinServerRoom(roomId, currentUser);
-    if (!assignedTeam) {
-        alert("Server no longer exists!");
-        return;
-    }
-    currentRoomId = roomId;
-    userTeam = assignedTeam;
-    joinRoomSession(roomId);
+function loadServerList() {
+    const serversRef = ref(db, 'servers');
+    onValue(serversRef, (snapshot) => {
+        const data = snapshot.val() || {};
+        const listEl = document.getElementById('serverList');
+        listEl.innerHTML = '';
+
+        let activeServersCount = 0;
+        for (let sId in data) {
+            const server = data[sId];
+            if (server.status === 'waiting') {
+                activeServersCount++;
+                const item = document.createElement('div');
+                item.className = 'server-item';
+                item.innerHTML = `
+                    <span>Host: <strong>${server.host}</strong></span>
+                    <button class="btn btn-secondary" onclick="window.joinServer('${sId}')">Join Match</button>
+                `;
+                listEl.appendChild(item);
+            }
+        }
+
+        if (activeServersCount === 0) {
+            listEl.innerHTML = `<div style="color:var(--text-muted); font-size:0.8rem; text-align:center; margin-top:20px;">No servers active. Create one!</div>`;
+        }
+    });
+}
+
+// Expose joinServer to global window scope so buttons generated via HTML string can trigger it
+window.joinServer = function(sId) {
+    if (!currentUser) return;
+    currentServerId = sId;
+    const serverRef = ref(db, `servers/${sId}`);
+
+    get(serverRef).then((snapshot) => {
+        const server = snapshot.val();
+        if (!server || server.status !== 'waiting') {
+            alert("This server is no longer available.");
+            return;
+        }
+
+        // Create match node
+        const matchesRef = ref(db, 'matches');
+        const newMatchRef = push(matchesRef);
+        currentMatchId = newMatchRef.key;
+
+        set(newMatchRef, {
+            white: server.host,
+            black: currentUser,
+            turn: 'white',
+            status: 'active',
+            board: getInitialBoardState()
+        });
+
+        // Update server status
+        update(serverRef, {
+            guest: currentUser,
+            status: 'playing',
+            matchId: currentMatchId
+        });
+
+        playerTeam = 'black'; // Guest is Black/Blue team
+        logToConsole(`Joined server ${sId}. Match ID: ${currentMatchId}`);
+        startGameSession();
+    });
 };
 
-document.getElementById('cancelRoomBtn').addEventListener('click', async () => {
-    if (currentRoomId) await removeRoom(currentRoomId);
-    currentRoomId = null;
-    showScreen('lobby');
-});
+// --- GAME SESSION & RENDERER ---
+function startGameSession() {
+    showScreen('game-screen');
+    document.getElementById('playerTeamBadge').innerText = `Team: ${playerTeam.toUpperCase()}`;
+    document.getElementById('statusBanner').innerText = "Match started! Good luck.";
+    logToConsole(`Starting game session as team: ${playerTeam}`);
 
-adminClearBtn.addEventListener('click', async () => {
-    if (confirm("Purge all active rooms and match caches?")) {
-        await removeAllRooms();
-        alert("All matches cleared.");
-    }
-});
-
-function initGlobalChat() {
-    const chatMsgContainer = document.getElementById('globalChatMessages');
-    const chatInput = document.getElementById('globalChatInput');
-    const chatSend = document.getElementById('globalChatSend');
-
-    listenGlobalChat((msgs) => {
-        chatMsgContainer.innerHTML = Object.values(msgs).map(m => `
-            <div class="global-chat-msg"><b>${m.sender}:</b> ${m.text}</div>
-        `).join('');
-        chatMsgContainer.scrollTop = chatMsgContainer.scrollHeight;
-    });
-
-    const sendHandler = () => {
-        const text = chatInput.value.trim();
-        if (!text) return;
-        sendGlobalMessage(currentUser, text);
-        chatInput.value = '';
-    };
-
-    chatSend.onclick = sendHandler;
-    chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendHandler(); };
+    initCanvasGame();
+    listenToMatchUpdates();
+    listenToMatchChat();
 }
 
-// ------------------------------------------
-// 18x18 BOARD LOGIC & RENDERING ENGINE
-// ------------------------------------------
+let selectedPiece = null;
+let boardState = getInitialBoardState();
+
 function getInitialBoardState() {
-    let board = [];
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        let row = [];
-        for (let c = 0; c < BOARD_SIZE; c++) {
-            if (r === 0) {
-                row.push(c % 2 === 0 ? 'r' : 'n');
-            } else if (r === 1) {
-                row.push('p');
-            } else if (r === BOARD_SIZE - 2) {
-                row.push('P');
-            } else if (r === BOARD_SIZE - 1) {
-                row.push(c % 2 === 0 ? 'R' : 'N');
-            } else {
-                row.push('');
-            }
-        }
-        board.push(row);
-    }
-    return board;
+    // Simplified checker/chess initial setup or standard grid reference
+    return [
+        ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+        ['bP','bP','bP','bP','bP','bP','bP','bP'],
+        ['','','','','','','',''],
+        ['','','','','','','',''],
+        ['','','','','','','',''],
+        ['','','','','','','',''],
+        ['wP','wP','wP','wP','wP','wP','wP','wP'],
+        ['wR','wN','wB','wQ','wK','wB','wN','wR']
+    ];
 }
 
-function joinRoomSession(roomId) {
-    currentRoomId = roomId;
-
-    listenRoomChanges(roomId, (room) => {
-        if (!room) return;
-        
-        userTeam = room.host === currentUser ? 'white' : 'black';
-        document.getElementById('playerTeamBadge').textContent = `Team: ${userTeam.toUpperCase()} (${currentUser})`;
-        showScreen('game');
-        gameActive = true;
-
-        boardState = room.board;
-        localTurn = room.turn;
-        
-        updateStatusBanner();
-        renderBoard();
-    });
-
-    initMatchChat(roomId);
-}
-
-function updateStatusBanner() {
-    const banner = document.getElementById('statusBanner');
-    if (localTurn === userTeam) {
-        banner.textContent = "Your Turn to Move!";
-        banner.style.color = "#4CAF50";
-    } else {
-        banner.textContent = `Opponent's Turn (${localTurn.toUpperCase()})...`;
-        banner.style.color = "#ffeb3b";
-    }
-}
-
-function renderBoard() {
-    if (!boardState) return;
-
-    const displayWidth = canvas.clientWidth || 360;
-    if (canvas.width !== displayWidth || canvas.height !== displayWidth) {
-        canvas.width = displayWidth;
-        canvas.height = displayWidth;
-    }
-
-    const sqSize = canvas.width / BOARD_SIZE;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    for (let row = 0; row < BOARD_SIZE; row++) {
-        for (let col = 0; col < BOARD_SIZE; col++) {
-            const isLight = (row + col) % 2 === 0;
-            ctx.fillStyle = isLight ? '#2a2a2a' : '#1a1a1a';
-            
-            if (selectedSquare && selectedSquare.row === row && selectedSquare.col === col) {
-                ctx.fillStyle = '#2196F3';
-            }
-
-            ctx.fillRect(col * sqSize, row * sqSize, sqSize, sqSize);
-
-            const piece = boardState[row][col];
-            if (piece) {
-                const fontSize = Math.max(10, Math.floor(sqSize * 0.65));
-                ctx.font = `${fontSize}px sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = piece === piece.toUpperCase() ? '#ffffff' : '#ff5252';
-                ctx.fillText(getPieceSymbol(piece), col * sqSize + sqSize / 2, row * sqSize + sqSize / 2);
-            }
-        }
-    }
-}
-
-function getPieceSymbol(p) {
-    const symbols = {
-        'K': '♔', 'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘', 'P': '♙',
-        'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
-    };
-    return symbols[p] || p;
-}
-
-canvas.addEventListener('click', (e) => {
-    if (!gameActive || localTurn !== userTeam) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const sqSize = rect.width / BOARD_SIZE;
+function initCanvasGame() {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
     
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // Set explicit canvas dimensions for crisp rendering
+    canvas.width = 400;
+    canvas.height = 400;
 
-    const col = Math.floor(x / sqSize);
-    const row = Math.floor(y / sqSize);
+    const tileSize = canvas.width / 8;
 
-    if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return;
+    function drawBoard() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const isLight = (r + c) % 2 === 0;
+                ctx.fillStyle = isLight ? '#2a2a2a' : '#1a1a1a';
+                if (selectedPiece && selectedPiece.row === r && selectedPiece.col === c) {
+                    ctx.fillStyle = '#4CAF50'; // Highlight selected tile
+                }
+                ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
 
-    const clickedPiece = boardState[row][col];
-    const isMyPiece = clickedPiece && ((userTeam === 'white' && clickedPiece === clickedPiece.toUpperCase()) || 
-                                       (userTeam === 'black' && clickedPiece === clickedPiece.toLowerCase()));
+                const piece = boardState[r][c];
+                if (piece) {
+                    drawPiece(ctx, piece, c * tileSize, r * tileSize, tileSize);
+                }
+            }
+        }
+    }
+
+    drawBoard();
+
+    // Handle clicks on canvas for piece movement
+    canvas.onclick = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const c = Math.floor((x / rect.width) * 8);
+        const r = Math.floor((y / rect.height) * 8);
+
+        handleSquareClick(r, c);
+        drawBoard();
+    };
+}
+
+function drawPiece(ctx, pieceCode, x, y, size) {
+    ctx.font = `${size * 0.6}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    const isWhite = pieceCode.startsWith('w');
+    ctx.fillStyle = isWhite ? '#ff5252' : '#2196F3'; // Red vs Blue teams
+
+    let symbol = '';
+    const type = pieceCode[1];
+    if (type === 'P') symbol = '♟';
+    if (type === 'R') symbol = '♜';
+    if (type === 'N') symbol = '♞';
+    if (type === 'B') symbol = '♝';
+    if (type === 'Q') symbol = '♛';
+    if (type === 'K') symbol = '♚';
+
+    ctx.fillText(symbol, x + size / 2, y + size / 2);
+}
+
+function handleSquareClick(r, c) {
+    const piece = boardState[r][c];
+    const isMyPiece = piece && ((playerTeam === 'white' && piece.startsWith('w')) || (playerTeam === 'black' && piece.startsWith('b')));
 
     if (isMyPiece) {
-        selectedSquare = { row, col };
-        renderBoard();
-    } else if (selectedSquare) {
-        executeMoveTransaction(currentRoomId, userTeam, selectedSquare.row, selectedSquare.col, row, col);
-        selectedSquare = null;
+        selectedPiece = { row: r, col: c };
+        logToConsole(`Selected piece ${piece} at (${r}, ${c})`);
+    } else if (selectedPiece) {
+        // Move piece
+        boardState[r][c] = boardState[selectedPiece.row][selectedPiece.col];
+        boardState[selectedPiece.row][selectedPiece.col] = '';
+        selectedPiece = null;
+
+        // Sync with Firebase
+        if (currentMatchId) {
+            update(ref(db, `matches/${currentMatchId}`), {
+                board: boardState,
+                turn: playerTeam === 'white' ? 'black' : 'white'
+            });
+            logToConsole("Board state updated and synced to Firebase.");
+        }
     }
-});
-
-function initMatchChat(roomId) {
-    const chatMsgContainer = document.getElementById('chatMessages');
-    const chatInput = document.getElementById('chatInput');
-    const chatSend = document.getElementById('chatSend');
-
-    listenMatchChat(roomId, (msgs) => {
-        chatMsgContainer.innerHTML = Object.values(msgs).map(m => `
-            <div class="chat-msg"><b>${m.sender}:</b> ${m.text}</div>
-        `).join('');
-        chatMsgContainer.scrollTop = chatMsgContainer.scrollHeight;
-    });
-
-    const sendHandler = () => {
-        const text = chatInput.value.trim();
-        if (!text) return;
-        sendMatchMessage(roomId, currentUser, text);
-        chatInput.value = '';
-    };
-
-    chatSend.onclick = sendHandler;
-    chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendHandler(); };
 }
 
-document.getElementById('surrenderBtn').addEventListener('click', async () => {
-    if (confirm("Are you sure you want to surrender and leave the match?")) {
-        if (currentRoomId) await removeRoom(currentRoomId);
-        currentRoomId = null;
-        gameActive = false;
-        showScreen('lobby');
+function listenToMatchUpdates() {
+    if (!currentMatchId) return;
+    const matchRef = ref(db, `matches/${currentMatchId}`);
+    onValue(matchRef, (snapshot) => {
+        const match = snapshot.val();
+        if (!match) return;
+        boardState = match.board || boardState;
+        
+        const banner = document.getElementById('statusBanner');
+        if (match.status === 'ended') {
+            banner.innerText = `Match Ended! Winner: ${match.winner || 'Draw'}`;
+        } else {
+            banner.innerText = `Turn: ${match.turn.toUpperCase()} (${match.turn === playerTeam ? 'Your Turn' : "Opponent's Turn"})`;
+        }
+        
+        // Redraw canvas with updated board
+        const canvas = document.getElementById('gameCanvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            const tileSize = canvas.width / 8;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    ctx.fillStyle = (r + c) % 2 === 0 ? '#2a2a2a' : '#1a1a1a';
+                    ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+                    const p = boardState[r][c];
+                    if (p) drawPiece(ctx, p, c * tileSize, r * tileSize, tileSize);
+                }
+            }
+        }
+    });
+}
+
+function leaveMatch() {
+    if (currentMatchId) {
+        update(ref(db, `matches/${currentMatchId}`), { status: 'ended', winner: playerTeam === 'white' ? 'black' : 'white' });
     }
-});
+    if (currentServerId) {
+        remove(ref(db, `servers/${currentServerId}`));
+    }
+    currentMatchId = null;
+    currentServerId = null;
+    showScreen('lobby-screen');
+    logToConsole("Left match and returned to lobby.");
+}
 
-document.getElementById('clearConsole').addEventListener('click', () => {
-    document.getElementById('console-logs').innerHTML = '';
-});
+function listenToMatchChat() {
+    if (!currentMatchId) return;
+    const chatRef = ref(db, `matches/${currentMatchId}/chat`);
+    
+    // Setup send listener once
+    const sendBtn = document.getElementById('chatSend');
+    const inputEl = document.getElementById('chatInput');
+    
+    // Replace element with clone to clear old event listeners
+    const newSendBtn = sendBtn.cloneNode(true);
+    sendBtn.parentNode.replaceChild(newSendBtn, sendBtn);
 
-showScreen('login');
+    newSendBtn.addEventListener('click', () => {
+        const text = inputEl.value.trim();
+        if (!text) return;
+        push(chatRef, { sender: currentUser, text: text, timestamp: Date.now() });
+        inputEl.value = '';
+    });
+
+    onValue(chatRef, (snapshot) => {
+        const data = snapshot.val() || {};
+        const container = document.getElementById('chatMessages');
+        container.innerHTML = '';
+        Object.values(data).forEach(msg => {
+            const div = document.createElement('div');
+            div.className = 'chat-msg';
+            div.innerHTML = `<strong>${msg.sender}:</strong> ${escapeHtml(msg.text)}`;
+            container.appendChild(div);
+        });
+        container.scrollTop = container.scrollHeight;
+    });
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
