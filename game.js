@@ -1,4 +1,4 @@
-// game.js - Main Controller, UI, and Game Logic (Integrated with 18x18 Flipped Map System)
+// game.js - Updated Main Controller, UI, and Game Logic (Match End Auto-Redirect, Who vs Who, Ongoing Servers in Lobby)
 import { db, ref, set, get, update, remove, onValue, push, setupUserPresence, markUserOffline } from './network.js';
 
 // Global Game State
@@ -9,6 +9,7 @@ let playerTeam = null; // 'blue' or 'red'
 let localTeam = 'blue'; // Used for board flipping controller
 let selectedUnit = null;
 let animationFrameId = null;
+let matchEndTimeout = null;
 
 // Preset Accounts for validation
 const validAccounts = {
@@ -203,7 +204,7 @@ function listenToGlobalChat() {
     });
 }
 
-// --- LOBBY & SERVER CREATION ---
+// --- LOBBY & SERVER CREATION WITH ONGOING MATCH DISPLAY ---
 function createNewServer() {
     if (!currentUser) return;
     const serversRef = ref(db, 'servers');
@@ -240,22 +241,28 @@ function loadServerList() {
         const listEl = document.getElementById('serverList');
         listEl.innerHTML = '';
 
-        let activeServersCount = 0;
+        let totalServersCount = 0;
         for (let sId in data) {
             const server = data[sId];
+            totalServersCount++;
+            const item = document.createElement('div');
+            item.className = 'server-item';
+
             if (server.status === 'waiting') {
-                activeServersCount++;
-                const item = document.createElement('div');
-                item.className = 'server-item';
                 item.innerHTML = `
-                    <span>Host: <strong>${server.host}</strong></span>
+                    <span>Host: <strong>${server.host}</strong> (Waiting for opponent)</span>
                     <button class="btn btn-secondary" onclick="window.joinServer('${sId}')">Join Match</button>
                 `;
-                listEl.appendChild(item);
+            } else if (server.status === 'playing') {
+                item.innerHTML = `
+                    <span>Server [${server.host} vs ${server.guest}]: <strong style="color: #e74c3c;">Match Ongoing</strong></span>
+                    <button class="btn btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed;">In Progress</button>
+                `;
             }
+            listEl.appendChild(item);
         }
 
-        if (activeServersCount === 0) {
+        if (totalServersCount === 0) {
             listEl.innerHTML = `<div style="color:var(--text-muted); font-size:0.8rem; text-align:center; margin-top:20px;">No servers active. Create one!</div>`;
         }
     });
@@ -393,6 +400,10 @@ function getRenderCoordinates(gridX, gridY, canvasWidth) {
 
 // --- GAME SESSION & RENDERER INTEGRATION ---
 function startGameSession() {
+    if (matchEndTimeout) {
+        clearTimeout(matchEndTimeout);
+        matchEndTimeout = null;
+    }
     showScreen('game-screen');
     document.getElementById('playerTeamBadge').innerText = `Team: ${playerTeam.toUpperCase()}`;
     document.getElementById('statusBanner').innerText = "Match started! 18x18 Flipped Map initialized.";
@@ -528,17 +539,32 @@ function listenToMatchUpdates() {
         if (!match) return;
         units = match.units || units;
         
+        // Determine opponent username dynamically
+        let opponentName = playerTeam === 'blue' ? (match.redUser || 'Opponent') : (match.blueUser || 'Opponent');
+
         const banner = document.getElementById('statusBanner');
         if (match.status === 'ended') {
-            banner.innerText = `Match Ended! Winner: ${match.winner || 'Draw'}`;
+            banner.innerText = `Match Ended! Winner: ${match.winner ? match.winner.toUpperCase() : 'Draw'}`;
+            logToConsole(`Match ended. Winner: ${match.winner}. Returning to lobby in 4 seconds...`);
+            
+            if (!matchEndTimeout) {
+                matchEndTimeout = setTimeout(() => {
+                    leaveMatch();
+                }, 4000);
+            }
         } else {
-            banner.innerText = `Turn: ${match.turn.toUpperCase()} (${match.turn === playerTeam ? 'Your Turn' : "Opponent's Turn"})`;
+            const isMyTurn = match.turn === playerTeam;
+            banner.innerText = `VS ${opponentName} | Turn: ${match.turn.toUpperCase()} (${isMyTurn ? 'Your Turn' : `${opponentName}'s Turn`})`;
         }
     });
 }
 
 function leaveMatch() {
     if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    if (matchEndTimeout) {
+        clearTimeout(matchEndTimeout);
+        matchEndTimeout = null;
+    }
     if (currentMatchId) {
         update(ref(db, `matches/${currentMatchId}`), { status: 'ended', winner: playerTeam === 'blue' ? 'red' : 'blue' });
     }
@@ -548,6 +574,7 @@ function leaveMatch() {
     currentMatchId = null;
     currentServerId = null;
     showScreen('lobby-screen');
+    loadServerList();
     logToConsole("Left match and returned to lobby.");
 }
 
