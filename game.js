@@ -1,19 +1,14 @@
 // ==========================================
-// MODERN CHESS ONLINE - app.js (v2.5 - 18x18 Scaling)
+// GAME CLIENT & UI MODULE (game.js)
 // ==========================================
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { 
-    getDatabase, ref, set, get, update, remove, onValue, push, child, runTransaction 
-} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-
-// Firebase Configuration
-const firebaseConfig = {
-    databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app/"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+    logMessage, setPresence, listenPresence, checkExistingRooms, 
+    removeRoom, removeAllRooms, listenRooms, createNewRoom, 
+    listenRoomChanges, joinServerRoom, sendGlobalMessage, 
+    listenGlobalChat, sendMatchMessage, listenMatchChat, 
+    executeMoveTransaction 
+} from './network.js';
 
 let currentUser = null;
 let currentRoomId = null;
@@ -23,6 +18,10 @@ let selectedSquare = null;
 let localTurn = 'white';
 let gameActive = false;
 
+const BOARD_SIZE = 18;
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
 const screens = {
     login: document.getElementById('login-screen'),
     reconnect: document.getElementById('reconnect-screen'),
@@ -30,14 +29,6 @@ const screens = {
     wait: document.getElementById('wait-screen'),
     game: document.getElementById('game-screen')
 };
-
-function logMessage(msg) {
-    const logsContainer = document.getElementById('console-logs');
-    if (!logsContainer) return;
-    const timeStr = new Date().toLocaleTimeString();
-    logsContainer.innerHTML += `[${timeStr}] ${msg}<br>`;
-    logsContainer.scrollTop = logsContainer.scrollHeight;
-}
 
 function showScreen(screenKey) {
     Object.keys(screens).forEach(key => {
@@ -49,7 +40,7 @@ function showScreen(screenKey) {
 }
 
 // ------------------------------------------
-// AUTHENTICATION & PRESENCE (Kept intact)
+// AUTHENTICATION & PRESENCE
 // ------------------------------------------
 const userInput = document.getElementById('userInput');
 const passInput = document.getElementById('passInput');
@@ -79,7 +70,7 @@ loginBtn.addEventListener('click', async () => {
 
 logoutBtn.addEventListener('click', () => {
     if (currentUser) {
-        set(ref(db, `presence/${currentUser}`), null);
+        setPresence(currentUser, { online: false, lastSeen: Date.now() });
     }
     currentUser = null;
     currentRoomId = null;
@@ -88,11 +79,9 @@ logoutBtn.addEventListener('click', () => {
 });
 
 function setupUserPresence(username) {
-    const userRef = ref(db, `presence/${username}`);
-    set(userRef, { online: true, lastSeen: Date.now() });
+    setPresence(username, { online: true, lastSeen: Date.now() });
 
-    onValue(ref(db, 'presence'), (snapshot) => {
-        const data = snapshot.val() || {};
+    listenPresence((data) => {
         const activePlayers = Object.keys(data).filter(user => data[user].online);
         
         const countText = document.getElementById('onlineCountText');
@@ -117,18 +106,7 @@ function setupUserPresence(username) {
 
 async function checkActiveSession(username) {
     welcomeUser.textContent = `Logged in as: ${username}`;
-    const snapshot = await get(ref(db, 'rooms'));
-    
-    let foundRoomId = null;
-    if (snapshot.exists()) {
-        const rooms = snapshot.val();
-        for (const [roomId, roomData] of Object.entries(rooms)) {
-            if ((roomData.host === username || roomData.guest === username) && roomData.status === 'playing') {
-                foundRoomId = roomId;
-                break;
-            }
-        }
-    }
+    const foundRoomId = await checkActiveSessionHelper(username);
 
     if (foundRoomId) {
         currentRoomId = foundRoomId;
@@ -139,9 +117,13 @@ async function checkActiveSession(username) {
     }
 }
 
+async function checkActiveSessionHelper(username) {
+    return await checkExistingRooms(username);
+}
+
 document.getElementById('rejoinYesBtn').addEventListener('click', () => joinRoomSession(currentRoomId));
 document.getElementById('rejoinNoBtn').addEventListener('click', async () => {
-    if (currentRoomId) await remove(ref(db, `rooms/${currentRoomId}`));
+    if (currentRoomId) await removeRoom(currentRoomId);
     currentRoomId = null;
     showScreen('lobby');
     initLobbySystem();
@@ -155,8 +137,7 @@ const createServerBtn = document.getElementById('createServerBtn');
 const adminClearBtn = document.getElementById('adminClearBtn');
 
 function initLobbySystem() {
-    onValue(ref(db, 'rooms'), (snapshot) => {
-        const data = snapshot.val() || {};
+    listenRooms((data) => {
         const openRooms = Object.entries(data).filter(([id, room]) => room.status === 'waiting');
 
         serverListContainer.innerHTML = openRooms.length === 0 
@@ -172,8 +153,6 @@ function initLobbySystem() {
 }
 
 createServerBtn.addEventListener('click', async () => {
-    const newRoomRef = push(ref(db, 'rooms'));
-    currentRoomId = newRoomRef.key;
     userTeam = 'white';
 
     const roomData = {
@@ -184,12 +163,11 @@ createServerBtn.addEventListener('click', async () => {
         board: getInitialBoardState()
     };
 
-    await set(newRoomRef, roomData);
+    currentRoomId = await createNewRoom(roomData);
     document.getElementById('roomCodeDisplay').textContent = `Room ID: ${currentRoomId}`;
     showScreen('wait');
 
-    onValue(ref(db, `rooms/${currentRoomId}`), (snapshot) => {
-        const room = snapshot.val();
+    listenRoomChanges(currentRoomId, (room) => {
         if (room && room.guest && room.status === 'playing') {
             joinRoomSession(currentRoomId);
         }
@@ -197,33 +175,25 @@ createServerBtn.addEventListener('click', async () => {
 });
 
 window.joinGameServer = async (roomId) => {
-    const roomRef = ref(db, `rooms/${roomId}`);
-    const snapshot = await get(roomRef);
-    if (!snapshot.exists()) { alert("Server no longer exists!"); return; }
-
-    const room = snapshot.val();
-    if (room.host === currentUser) {
-        currentRoomId = roomId;
-        userTeam = 'white';
-        joinRoomSession(roomId);
+    const assignedTeam = await joinServerRoom(roomId, currentUser);
+    if (!assignedTeam) {
+        alert("Server no longer exists!");
         return;
     }
-
-    await update(roomRef, { guest: currentUser, status: 'playing' });
     currentRoomId = roomId;
-    userTeam = 'black';
+    userTeam = assignedTeam;
     joinRoomSession(roomId);
 };
 
 document.getElementById('cancelRoomBtn').addEventListener('click', async () => {
-    if (currentRoomId) await remove(ref(db, `rooms/${currentRoomId}`));
+    if (currentRoomId) await removeRoom(currentRoomId);
     currentRoomId = null;
     showScreen('lobby');
 });
 
 adminClearBtn.addEventListener('click', async () => {
     if (confirm("Purge all active rooms and match caches?")) {
-        await remove(ref(db, 'rooms'));
+        await removeAllRooms();
         alert("All matches cleared.");
     }
 });
@@ -233,8 +203,7 @@ function initGlobalChat() {
     const chatInput = document.getElementById('globalChatInput');
     const chatSend = document.getElementById('globalChatSend');
 
-    onValue(ref(db, 'globalChat'), (snapshot) => {
-        const msgs = snapshot.val() || {};
+    listenGlobalChat((msgs) => {
         chatMsgContainer.innerHTML = Object.values(msgs).map(m => `
             <div class="global-chat-msg"><b>${m.sender}:</b> ${m.text}</div>
         `).join('');
@@ -244,7 +213,7 @@ function initGlobalChat() {
     const sendHandler = () => {
         const text = chatInput.value.trim();
         if (!text) return;
-        push(ref(db, 'globalChat'), { sender: currentUser, text, timestamp: Date.now() });
+        sendGlobalMessage(currentUser, text);
         chatInput.value = '';
     };
 
@@ -253,19 +222,14 @@ function initGlobalChat() {
 }
 
 // ------------------------------------------
-// 18x18 BOARD LOGIC & SCALED RENDERING
+// 18x18 BOARD LOGIC & RENDERING ENGINE
 // ------------------------------------------
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-const BOARD_SIZE = 18; // Updated to 18x18 grid
-
 function getInitialBoardState() {
     let board = [];
     for (let r = 0; r < BOARD_SIZE; r++) {
         let row = [];
         for (let c = 0; c < BOARD_SIZE; c++) {
             if (r === 0) {
-                // Example top row pieces configuration or blank layout filling 18 columns
                 row.push(c % 2 === 0 ? 'r' : 'n');
             } else if (r === 1) {
                 row.push('p');
@@ -284,29 +248,23 @@ function getInitialBoardState() {
 
 function joinRoomSession(roomId) {
     currentRoomId = roomId;
-    const roomRef = ref(db, `rooms/${roomId}`);
 
-    get(roomRef).then((snapshot) => {
-        if (!snapshot.exists()) return;
-        const room = snapshot.val();
+    listenRoomChanges(roomId, (room) => {
+        if (!room) return;
         
         userTeam = room.host === currentUser ? 'white' : 'black';
         document.getElementById('playerTeamBadge').textContent = `Team: ${userTeam.toUpperCase()} (${currentUser})`;
         showScreen('game');
         gameActive = true;
 
-        onValue(roomRef, (snap) => {
-            const updatedRoom = snap.val();
-            if (!updatedRoom) return;
-            boardState = updatedRoom.board;
-            localTurn = updatedRoom.turn;
-            
-            updateStatusBanner();
-            renderBoard();
-        });
-
-        initMatchChat(roomId);
+        boardState = room.board;
+        localTurn = room.turn;
+        
+        updateStatusBanner();
+        renderBoard();
     });
+
+    initMatchChat(roomId);
 }
 
 function updateStatusBanner() {
@@ -323,7 +281,6 @@ function updateStatusBanner() {
 function renderBoard() {
     if (!boardState) return;
 
-    // Dynamically match canvas internal size to its CSS display width for high fidelity
     const displayWidth = canvas.clientWidth || 360;
     if (canvas.width !== displayWidth || canvas.height !== displayWidth) {
         canvas.width = displayWidth;
@@ -346,7 +303,6 @@ function renderBoard() {
 
             const piece = boardState[row][col];
             if (piece) {
-                // Dynamically scale font size relative to current square sizing
                 const fontSize = Math.max(10, Math.floor(sqSize * 0.65));
                 ctx.font = `${fontSize}px sans-serif`;
                 ctx.textAlign = 'center';
@@ -388,31 +344,17 @@ canvas.addEventListener('click', (e) => {
         selectedSquare = { row, col };
         renderBoard();
     } else if (selectedSquare) {
-        executeMove(selectedSquare.row, selectedSquare.col, row, col);
+        executeMoveTransaction(currentRoomId, userTeam, selectedSquare.row, selectedSquare.col, row, col);
         selectedSquare = null;
     }
 });
-
-async function executeMove(fromR, fromC, toR, toC) {
-    const roomRef = ref(db, `rooms/${currentRoomId}`);
-    await runTransaction(roomRef, (room) => {
-        if (room && room.turn === userTeam) {
-            const piece = room.board[fromR][fromC];
-            room.board[fromR][fromC] = '';
-            room.board[toR][toC] = piece;
-            room.turn = room.turn === 'white' ? 'black' : 'white';
-        }
-        return room;
-    });
-}
 
 function initMatchChat(roomId) {
     const chatMsgContainer = document.getElementById('chatMessages');
     const chatInput = document.getElementById('chatInput');
     const chatSend = document.getElementById('chatSend');
 
-    onValue(ref(db, `rooms/${roomId}/chat`), (snapshot) => {
-        const msgs = snapshot.val() || {};
+    listenMatchChat(roomId, (msgs) => {
         chatMsgContainer.innerHTML = Object.values(msgs).map(m => `
             <div class="chat-msg"><b>${m.sender}:</b> ${m.text}</div>
         `).join('');
@@ -422,7 +364,7 @@ function initMatchChat(roomId) {
     const sendHandler = () => {
         const text = chatInput.value.trim();
         if (!text) return;
-        push(ref(db, `rooms/${roomId}/chat`), { sender: currentUser, text, timestamp: Date.now() });
+        sendMatchMessage(roomId, currentUser, text);
         chatInput.value = '';
     };
 
@@ -432,7 +374,7 @@ function initMatchChat(roomId) {
 
 document.getElementById('surrenderBtn').addEventListener('click', async () => {
     if (confirm("Are you sure you want to surrender and leave the match?")) {
-        if (currentRoomId) await remove(ref(db, `rooms/${currentRoomId}`));
+        if (currentRoomId) await removeRoom(currentRoomId);
         currentRoomId = null;
         gameActive = false;
         showScreen('lobby');
