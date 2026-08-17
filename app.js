@@ -9,7 +9,7 @@ import {
 
 // Firebase Configuration
 const firebaseConfig = {
-    databaseURL: "https://chess-online-devonline-default-rtdb.firebaseio.com/"
+    databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app/"
 };
 
 const app = initializeApp(firebaseConfig);
