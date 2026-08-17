@@ -5,40 +5,44 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
 const firebaseConfig = {
-    // Make sure your real Firebase configuration credentials are here
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_AUTH_DOMAIN",
-    databaseURL: "YOUR_DATABASE_URL",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_STORAGE_BUCKET",
-    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-    appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyCR7AEYbqh3hVytxaB05ra50ZLlpsys9EM",
+  authDomain: "mchess12333.firebaseapp.com",
+  databaseURL: "https://mchess12333-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "mchess12333",
+  storageBucket: "mchess12333.firebasestorage.app",
+  messagingSenderId: "504208198180",
+  appId: "1:504208198180:web:adced13b2cd0c0b6c166b1"
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+export const db = getDatabase(app);
 
-// --- PRESENCE SYSTEM (Fixes ghost/lingering accounts) ---
+// --- PRESENCE SYSTEM (Player Online Tracking) ---
 export function setupUserPresence(username) {
+    if (!username) return;
     const userStatusRef = ref(db, `players/${username}`);
-    const connectedRef = ref(db, '.info/connected');
 
-    onValue(connectedRef, (snap) => {
-        if (snap.val() === true) {
-            // When connected, set user online
-            const activeData = { online: true, lastSeen: Date.now() };
-            set(userStatusRef, activeData);
+    // Set user online
+    set(userStatusRef, {
+        online: true,
+        lastSeen: Date.now()
+    });
 
-            // Automatically set to offline or remove when socket disconnects (tab closed/crash)
-            onDisconnect(userStatusRef).set({ online: false, lastSeen: Date.now() });
-        }
+    // When the user disconnects (closes tab / loses connection), mark them offline
+    onDisconnect(userStatusRef).set({
+        online: false,
+        lastSeen: Date.now()
     });
 }
 
 export function markUserOffline(username) {
     if (!username) return;
     const userStatusRef = ref(db, `players/${username}`);
-    set(userStatusRef, { online: false, lastSeen: Date.now() });
+    set(userStatusRef, {
+        online: false,
+        lastSeen: Date.now()
+    });
 }
 
-export { db, ref, set, get, update, remove, onValue, push };
+// Export database functions for use in game.js
+export { ref, set, get, update, remove, onValue, push };
