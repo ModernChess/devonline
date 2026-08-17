@@ -1,12 +1,14 @@
-// game.js - Main Controller, UI, and Game Logic
+// game.js - Main Controller, UI, and Game Logic (Integrated with 18x18 Flipped Map System)
 import { db, ref, set, get, update, remove, onValue, push, setupUserPresence, markUserOffline } from './network.js';
 
 // Global Game State
 let currentUser = null;
 let currentServerId = null;
 let currentMatchId = null;
-let playerTeam = null; // 'white' (red) or 'black' (blue)
-let gameInterval = null;
+let playerTeam = null; // 'blue' or 'red'
+let localTeam = 'blue'; // Used for board flipping controller
+let selectedUnit = null;
+let animationFrameId = null;
 
 // Preset Accounts for validation
 const validAccounts = {
@@ -75,10 +77,7 @@ function initEventListeners() {
         err.innerText = "";
         currentUser = u;
 
-        // Save to Local Storage cache
         localStorage.setItem('chess_current_user', currentUser);
-
-        // Activate Firebase Presence
         setupUserPresence(currentUser);
 
         showScreen('lobby-screen');
@@ -132,7 +131,7 @@ function initEventListeners() {
     });
 }
 
-// --- ACTIVE PLAYERS LIST (Excludes offline/closed tabs) ---
+// --- ACTIVE PLAYERS LIST ---
 function listenToActivePlayers() {
     const playersRef = ref(db, 'players');
     onValue(playersRef, (snapshot) => {
@@ -145,7 +144,6 @@ function listenToActivePlayers() {
 
         for (let username in data) {
             const info = data[username];
-            // Only list users whose status is explicitly online: true
             if (info && info.online === true) {
                 onlineCount++;
                 const isYou = username === currentUser ? ' (You)' : '';
@@ -158,13 +156,9 @@ function listenToActivePlayers() {
             }
         }
 
-        if (onlineCount === 0) {
-            container.innerHTML = `<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>`;
-        } else {
-            container.innerHTML = htmlContent;
-        }
-
+        container.innerHTML = onlineCount === 0 ? `<div style="color:var(--text-muted); font-size:0.75rem; text-align:center;">No players online</div>` : htmlContent;
         document.getElementById('onlineCountText').innerText = `Active Players (${onlineCount})`;
+        
         const dot = document.getElementById('statusDot');
         if (onlineCount > 1) {
             dot.classList.add('active-multiple');
@@ -197,7 +191,6 @@ function listenToGlobalChat() {
         container.innerHTML = '';
 
         const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
-        // Keep last 30 messages
         const recent = messages.slice(-30);
 
         recent.forEach(msg => {
@@ -228,13 +221,13 @@ function createNewServer() {
     document.getElementById('roomCodeDisplay').innerText = `Server ID: ${currentServerId}`;
     showScreen('wait-screen');
 
-    // Listen to changes on this specific server to detect when a guest joins
     onValue(newServerRef, (snapshot) => {
         const data = snapshot.val();
         if (!data) return;
         if (data.status === 'playing' && data.matchId) {
             currentMatchId = data.matchId;
-            playerTeam = 'white'; // Host is White/Red team
+            playerTeam = 'blue'; // Host is Blue team
+            localTeam = 'blue';
             startGameSession();
         }
     });
@@ -268,7 +261,6 @@ function loadServerList() {
     });
 }
 
-// Expose joinServer to global window scope so buttons generated via HTML string can trigger it
 window.joinServer = function(sId) {
     if (!currentUser) return;
     currentServerId = sId;
@@ -281,147 +273,251 @@ window.joinServer = function(sId) {
             return;
         }
 
-        // Create match node
         const matchesRef = ref(db, 'matches');
         const newMatchRef = push(matchesRef);
         currentMatchId = newMatchRef.key;
 
         set(newMatchRef, {
-            white: server.host,
-            black: currentUser,
-            turn: 'white',
+            blueUser: server.host,
+            redUser: currentUser,
+            turn: 'blue',
             status: 'active',
-            board: getInitialBoardState()
+            units: getInitialUnitsState()
         });
 
-        // Update server status
         update(serverRef, {
             guest: currentUser,
             status: 'playing',
             matchId: currentMatchId
         });
 
-        playerTeam = 'black'; // Guest is Black/Blue team
+        playerTeam = 'red'; // Guest is Red team
+        localTeam = 'red'; // Flip board view for guest perspective
         logToConsole(`Joined server ${sId}. Match ID: ${currentMatchId}`);
         startGameSession();
     });
 };
 
-// --- GAME SESSION & RENDERER ---
+// --- MAP & ASSET INITIALIZATION CONTROLLER CONFIGURATION ---
+const cols = 18;
+const rows = 18;
+const ghBase = 'https://cdn.jsdelivr.net/gh/ModernChess/assets-images@main/';
+
+// Asset References & Preloading
+let blueTankImg = new Image(), blueTankLoaded = false;
+let blueInfantryImg = new Image(), blueInfantryLoaded = false;
+let blueArtilleryImg = new Image(), blueArtilleryLoaded = false;
+let blueShipImg = new Image(), blueShipLoaded = false;
+
+let redTankImg = new Image(), redTankLoaded = false;
+let redInfantryImg = new Image(), redInfantryLoaded = false;
+let redArtilleryImg = new Image(), redArtilleryLoaded = false;
+let redShipImg = new Image(), redShipLoaded = false;
+
+const assetUrls = [
+    ghBase + 'blue_tank.jpg', ghBase + 'blue_infantry.jpg', ghBase + 'blue_artillery.jpg', ghBase + 'blue_ship.jpg',
+    ghBase + 'red_tank.jpg', ghBase + 'red_infantry.jpg', ghBase + 'red_artillery.jpg', ghBase + 'red_ship.jpg'
+];
+
+function loadAssetWithProgress(url, imgObj, setLoadedFlag) {
+    fetch(url)
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            return response.blob();
+        })
+        .then(blob => {
+            let objectURL = URL.createObjectURL(blob);
+            imgObj.src = objectURL;
+            imgObj.onload = () => { setLoadedFlag(true); };
+        })
+        .catch(() => {
+            imgObj.src = url;
+            imgObj.onload = () => { setLoadedFlag(true); };
+        });
+}
+
+// Load Assets
+loadAssetWithProgress(assetUrls[0], blueTankImg, (val) => { blueTankLoaded = val; });
+loadAssetWithProgress(assetUrls[1], blueInfantryImg, (val) => { blueInfantryLoaded = val; });
+loadAssetWithProgress(assetUrls[2], blueArtilleryImg, (val) => { blueArtilleryLoaded = val; });
+loadAssetWithProgress(assetUrls[3], blueShipImg, (val) => { blueShipLoaded = val; });
+loadAssetWithProgress(assetUrls[4], redTankImg, (val) => { redTankLoaded = val; });
+loadAssetWithProgress(assetUrls[5], redInfantryImg, (val) => { redInfantryLoaded = val; });
+loadAssetWithProgress(assetUrls[6], redArtilleryImg, (val) => { redArtilleryLoaded = val; });
+loadAssetWithProgress(assetUrls[7], redShipImg, (val) => { redShipLoaded = val; });
+
+function getTerrain(c, r) {
+    const colChar = String.fromCharCode(65 + c);
+    const rowNum = r + 1;
+    const coord = colChar + rowNum;
+
+    const waterList = [
+        'I5', 'J5', 'I6', 'J6', 'K6', 'H7', 'I7', 'J7', 'K7', 'G8', 'H8', 'I8', 'J8', 'K8', 
+        'E9', 'F9', 'G9', 'H9', 'I9', 'J9', 'K9', 'L9', 'E10', 'F10', 'G10', 'H10', 'I10', 
+        'J10', 'K10', 'L10', 'F11', 'G11', 'H11', 'I11', 'J11', 'K11', 'L11', 'M11', 'I12', 
+        'J12', 'K12', 'L12', 'M12', 'N12', 'K13', 'L13', 'M13', 'N13', 'L14', 'M14', 'N14'
+    ];
+    if (waterList.includes(coord)) return 'water';
+    if (coord === 'F12') return 'blue_navy';
+    if (coord === 'L6') return 'red_navy';
+    if (coord === 'A12') return 'blue_core';
+    if (coord === 'R7') return 'red_core';
+    return 'land';
+}
+
+function getInitialUnitsState() {
+    return [
+        { id: 'b_inf_1', name: 'Infantry', type: 'land', range: 2, gridX: 2, gridY: 2, team: 'blue' },
+        { id: 'r_inf_1', name: 'Infantry', type: 'land', range: 2, gridX: cols - 3, gridY: rows - 3, team: 'red' }
+    ];
+}
+
+let units = getInitialUnitsState();
+
+function getRenderCoordinates(gridX, gridY, canvasWidth) {
+    let cellSize = canvasWidth / cols;
+    let renderX = gridX;
+    let renderY = gridY;
+
+    if (localTeam === 'red') {
+        renderX = cols - 1 - gridX;
+        renderY = rows - 1 - gridY;
+    }
+
+    return {
+        x: renderX * cellSize,
+        y: renderY * cellSize,
+        cellSize: cellSize
+    };
+}
+
+// --- GAME SESSION & RENDERER INTEGRATION ---
 function startGameSession() {
     showScreen('game-screen');
     document.getElementById('playerTeamBadge').innerText = `Team: ${playerTeam.toUpperCase()}`;
-    document.getElementById('statusBanner').innerText = "Match started! Good luck.";
-    logToConsole(`Starting game session as team: ${playerTeam}`);
+    document.getElementById('statusBanner').innerText = "Match started! 18x18 Flipped Map initialized.";
+    logToConsole(`Starting 18x18 game session as team: ${playerTeam}`);
 
     initCanvasGame();
     listenToMatchUpdates();
     listenToMatchChat();
 }
 
-let selectedPiece = null;
-let boardState = getInitialBoardState();
-
-function getInitialBoardState() {
-    // Simplified checker/chess initial setup or standard grid reference
-    return [
-        ['bR','bN','bB','bQ','bK','bB','bN','bR'],
-        ['bP','bP','bP','bP','bP','bP','bP','bP'],
-        ['','','','','','','',''],
-        ['','','','','','','',''],
-        ['','','','','','','',''],
-        ['','','','','','','',''],
-        ['wP','wP','wP','wP','wP','wP','wP','wP'],
-        ['wR','wN','wB','wQ','wK','wB','wN','wR']
-    ];
-}
-
 function initCanvasGame() {
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
     
-    // Set explicit canvas dimensions for crisp rendering
-    canvas.width = 400;
-    canvas.height = 400;
+    // Scale canvas properly for 18x18 responsive container
+    const parentWidth = canvas.parentElement ? canvas.parentElement.clientWidth : 540;
+    canvas.width = parentWidth > 0 ? parentWidth : 540;
+    canvas.height = canvas.width;
 
-    const tileSize = canvas.width / 8;
+    function renderGameLoop() {
+        if (!ctx || !canvas) return;
+        let cellSize = canvas.width / cols;
 
-    function drawBoard() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const isLight = (r + c) % 2 === 0;
-                ctx.fillStyle = isLight ? '#2a2a2a' : '#1a1a1a';
-                if (selectedPiece && selectedPiece.row === r && selectedPiece.col === c) {
-                    ctx.fillStyle = '#4CAF50'; // Highlight selected tile
-                }
-                ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
 
-                const piece = boardState[r][c];
-                if (piece) {
-                    drawPiece(ctx, piece, c * tileSize, r * tileSize, tileSize);
+        // 1. Draw 18x18 Grid & Terrain Tiles
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                let renderPos = getRenderCoordinates(c, r, canvas.width);
+                let terrain = getTerrain(c, r);
+
+                if (terrain === 'water') {
+                    ctx.fillStyle = '#1e3d59';
+                } else if (terrain.includes('core')) {
+                    ctx.fillStyle = '#4a2e2b';
+                } else {
+                    ctx.fillStyle = (c + r) % 2 === 0 ? '#262626' : '#1e1e1e';
                 }
+
+                ctx.fillRect(renderPos.x, renderPos.y, renderPos.cellSize, renderPos.cellSize);
+                ctx.strokeStyle = '#333333';
+                ctx.strokeRect(renderPos.x, renderPos.y, renderPos.cellSize, renderPos.cellSize);
             }
         }
+
+        // 2. Draw Units with Asset Textures
+        units.forEach(unit => {
+            let renderPos = getRenderCoordinates(unit.gridX, unit.gridY, canvas.width);
+
+            ctx.save();
+            if (selectedUnit && selectedUnit.id === unit.id) {
+                ctx.strokeStyle = '#f1c40f';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(renderPos.x + 2, renderPos.y + 2, renderPos.cellSize - 4, renderPos.cellSize - 4);
+            }
+
+            let unitImg = null;
+            let isLoaded = false;
+            if (unit.team === 'blue') {
+                if (unit.name === 'Infantry') { unitImg = blueInfantryImg; isLoaded = blueInfantryLoaded; }
+            } else {
+                if (unit.name === 'Infantry') { unitImg = redInfantryImg; isLoaded = redInfantryLoaded; }
+            }
+
+            if (isLoaded && unitImg && unitImg.complete) {
+                ctx.drawImage(unitImg, renderPos.x + 4, renderPos.y + 4, renderPos.cellSize - 8, renderPos.cellSize - 8);
+            } else {
+                ctx.fillStyle = unit.team === 'blue' ? '#2196F3' : '#ff5252';
+                ctx.beginPath();
+                ctx.arc(renderPos.x + renderPos.cellSize / 2, renderPos.y + renderPos.cellSize / 2, renderPos.cellSize / 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        });
+
+        animationFrameId = requestAnimationFrame(renderGameLoop);
     }
 
-    drawBoard();
+    if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    renderGameLoop();
 
-    // Handle clicks on canvas for piece movement
+    // Canvas click event handler for 18x18 board movement
     canvas.onclick = (e) => {
         const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const c = Math.floor((x / rect.width) * 8);
-        const r = Math.floor((y / rect.height) * 8);
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
 
-        handleSquareClick(r, c);
-        drawBoard();
-    };
-}
+        let cellSize = canvas.width / cols;
+        let clickedCol = Math.floor(clickX / cellSize);
+        let clickedRow = Math.floor(clickY / cellSize);
 
-function drawPiece(ctx, pieceCode, x, y, size) {
-    ctx.font = `${size * 0.6}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    
-    const isWhite = pieceCode.startsWith('w');
-    ctx.fillStyle = isWhite ? '#ff5252' : '#2196F3'; // Red vs Blue teams
-
-    let symbol = '';
-    const type = pieceCode[1];
-    if (type === 'P') symbol = '♟';
-    if (type === 'R') symbol = '♜';
-    if (type === 'N') symbol = '♞';
-    if (type === 'B') symbol = '♝';
-    if (type === 'Q') symbol = '♛';
-    if (type === 'K') symbol = '♚';
-
-    ctx.fillText(symbol, x + size / 2, y + size / 2);
-}
-
-function handleSquareClick(r, c) {
-    const piece = boardState[r][c];
-    const isMyPiece = piece && ((playerTeam === 'white' && piece.startsWith('w')) || (playerTeam === 'black' && piece.startsWith('b')));
-
-    if (isMyPiece) {
-        selectedPiece = { row: r, col: c };
-        logToConsole(`Selected piece ${piece} at (${r}, ${c})`);
-    } else if (selectedPiece) {
-        // Move piece
-        boardState[r][c] = boardState[selectedPiece.row][selectedPiece.col];
-        boardState[selectedPiece.row][selectedPiece.col] = '';
-        selectedPiece = null;
-
-        // Sync with Firebase
-        if (currentMatchId) {
-            update(ref(db, `matches/${currentMatchId}`), {
-                board: boardState,
-                turn: playerTeam === 'white' ? 'black' : 'white'
-            });
-            logToConsole("Board state updated and synced to Firebase.");
+        if (localTeam === 'red') {
+            clickedCol = cols - 1 - clickedCol;
+            clickedRow = rows - 1 - clickedRow;
         }
-    }
+
+        const clickedUnit = units.find(u => u.gridX === clickedCol && u.gridY === clickedRow);
+
+        if (clickedUnit) {
+            if (clickedUnit.team === playerTeam) {
+                selectedUnit = clickedUnit;
+                logToConsole(`Selected unit: ${selectedUnit.name} (${selectedUnit.team}) at [${clickedCol}, ${clickedRow}]`);
+            } else {
+                logToConsole(`Clicked enemy unit: ${clickedUnit.name}`);
+            }
+        } else if (selectedUnit) {
+            let dist = Math.abs(selectedUnit.gridX - clickedCol) + Math.abs(selectedUnit.gridY - clickedRow);
+            if (dist <= selectedUnit.range) {
+                selectedUnit.gridX = clickedCol;
+                selectedUnit.gridY = clickedRow;
+                logToConsole(`Moved unit to [${clickedCol}, ${clickedRow}]`);
+                
+                // Sync updated units list to Firebase match node
+                if (currentMatchId) {
+                    update(ref(db, `matches/${currentMatchId}`), {
+                        units: units,
+                        turn: playerTeam === 'blue' ? 'red' : 'blue'
+                    });
+                }
+                selectedUnit = null;
+            } else {
+                logToConsole(`Destination out of range! Range is ${selectedUnit.range}.`);
+            }
+        }
+    };
 }
 
 function listenToMatchUpdates() {
@@ -430,7 +526,7 @@ function listenToMatchUpdates() {
     onValue(matchRef, (snapshot) => {
         const match = snapshot.val();
         if (!match) return;
-        boardState = match.board || boardState;
+        units = match.units || units;
         
         const banner = document.getElementById('statusBanner');
         if (match.status === 'ended') {
@@ -438,28 +534,13 @@ function listenToMatchUpdates() {
         } else {
             banner.innerText = `Turn: ${match.turn.toUpperCase()} (${match.turn === playerTeam ? 'Your Turn' : "Opponent's Turn"})`;
         }
-        
-        // Redraw canvas with updated board
-        const canvas = document.getElementById('gameCanvas');
-        if (canvas) {
-            const ctx = canvas.getContext('2d');
-            const tileSize = canvas.width / 8;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            for (let r = 0; r < 8; r++) {
-                for (let c = 0; c < 8; c++) {
-                    ctx.fillStyle = (r + c) % 2 === 0 ? '#2a2a2a' : '#1a1a1a';
-                    ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
-                    const p = boardState[r][c];
-                    if (p) drawPiece(ctx, p, c * tileSize, r * tileSize, tileSize);
-                }
-            }
-        }
     });
 }
 
 function leaveMatch() {
+    if (animationFrameId) cancelAnimationFrame(animationFrameId);
     if (currentMatchId) {
-        update(ref(db, `matches/${currentMatchId}`), { status: 'ended', winner: playerTeam === 'white' ? 'black' : 'white' });
+        update(ref(db, `matches/${currentMatchId}`), { status: 'ended', winner: playerTeam === 'blue' ? 'red' : 'blue' });
     }
     if (currentServerId) {
         remove(ref(db, `servers/${currentServerId}`));
@@ -474,11 +555,9 @@ function listenToMatchChat() {
     if (!currentMatchId) return;
     const chatRef = ref(db, `matches/${currentMatchId}/chat`);
     
-    // Setup send listener once
     const sendBtn = document.getElementById('chatSend');
     const inputEl = document.getElementById('chatInput');
     
-    // Replace element with clone to clear old event listeners
     const newSendBtn = sendBtn.cloneNode(true);
     sendBtn.parentNode.replaceChild(newSendBtn, sendBtn);
 
