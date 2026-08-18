@@ -43,11 +43,11 @@ window.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('beforeunload', () => {
         if (currentUser && currentMatchId && !isLeavingDeliberately) {
             const afkField = playerTeam === 'blue' ? 'blueAfk' : 'redAfk';
-            // Use navigator.sendBeacon or synchronous/asynchronous firebase update if possible, 
-            // but standard Firebase SDK update works via persistent connection or offline handlers.
             try {
                 update(ref(db, `matches/${currentMatchId}`), { [afkField]: true });
-            } else {}
+            } catch (err) {
+                console.error("Failed to update AFK status on unload:", err);
+            }
         }
     });
 });
