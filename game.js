@@ -1,4 +1,4 @@
-// game.js - Updated Main Controller, UI, and Game Logic (Match End Auto-Redirect, Who vs Who, Ongoing Servers in Lobby)
+// game.js - Updated Main Controller, UI, and Game Logic with AFK Tracking & Rejoin Modals
 import { db, ref, set, get, update, remove, onValue, push, setupUserPresence, markUserOffline } from './network.js';
 
 // Global Game State
@@ -10,6 +10,7 @@ let localTeam = 'blue'; // Used for board flipping controller
 let selectedUnit = null;
 let animationFrameId = null;
 let matchEndTimeout = null;
+let isLeavingDeliberately = false;
 
 // Preset Accounts for validation
 const validAccounts = {
@@ -37,6 +38,18 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('clearConsole').addEventListener('click', () => {
         document.getElementById('console-logs').innerHTML = '';
     });
+
+    // Handle browser/tab close or reload to mark player AFK instead of deleting the match
+    window.addEventListener('beforeunload', () => {
+        if (currentUser && currentMatchId && !isLeavingDeliberately) {
+            const afkField = playerTeam === 'blue' ? 'blueAfk' : 'redAfk';
+            // Use navigator.sendBeacon or synchronous/asynchronous firebase update if possible, 
+            // but standard Firebase SDK update works via persistent connection or offline handlers.
+            try {
+                update(ref(db, `matches/${currentMatchId}`), { [afkField]: true });
+            } else {}
+        }
+    });
 });
 
 // --- LOCAL STORAGE CACHE & AUTO-LOGIN ---
@@ -49,6 +62,7 @@ function checkCachedSession() {
         showScreen('lobby-screen');
         document.getElementById('welcomeUser').innerText = `Logged in as: ${currentUser}`;
         loadServerList();
+        checkForActiveMatchOnLogin();
     } else {
         logToConsole("No active session in cache. Showing login screen.");
         showScreen('login-screen');
@@ -84,6 +98,7 @@ function initEventListeners() {
         showScreen('lobby-screen');
         document.getElementById('welcomeUser').innerText = `Logged in as: ${currentUser}`;
         loadServerList();
+        checkForActiveMatchOnLogin();
         logToConsole(`User ${currentUser} logged in successfully.`);
     });
 
@@ -118,7 +133,8 @@ function initEventListeners() {
     // Match Surrender Button
     document.getElementById('surrenderBtn').addEventListener('click', () => {
         if (confirm("Are you sure you want to surrender and leave the match?")) {
-            leaveMatch();
+            isLeavingDeliberately = true;
+            leaveMatchCompletely();
         }
     });
 
@@ -204,9 +220,95 @@ function listenToGlobalChat() {
     });
 }
 
+// --- CHECK FOR UNFINISHED MATCHES ON LOGIN/RELOAD ---
+function checkForActiveMatchOnLogin() {
+    const matchesRef = ref(db, 'matches');
+    get(matchesRef).then((snapshot) => {
+        const matches = snapshot.val() || {};
+        for (let mId in matches) {
+            const match = matches[mId];
+            if (match.status === 'active') {
+                if (match.blueUser === currentUser || match.redUser === currentUser) {
+                    // Found a match belonging to this user! Prompt popup to rejoin or reject.
+                    showRejoinPopup(mId, match);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+function showRejoinPopup(mId, match) {
+    // Remove existing popup if any
+    const existing = document.getElementById('rejoinPopupModal');
+    if (existing) existing.remove();
+
+    const isBlue = match.blueUser === currentUser;
+    const opponentName = isBlue ? match.redUser : match.blueUser;
+
+    const modal = document.createElement('div');
+    modal.id = 'rejoinPopupModal';
+    modal.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 9999;
+    `;
+
+    modal.innerHTML = `
+        <div style="background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; width: 90%; border: 1px solid #333; color: #fff;">
+            <h3 style="margin-top: 0; color: #f1c40f;">Active Match Found!</h3>
+            <p style="color: #ccc; font-size: 0.9rem;">You were previously in a match against <strong>${opponentName}</strong>. Would you like to rejoin or reject it?</p>
+            <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: center;">
+                <button id="acceptRejoinBtn" class="btn btn-primary" style="background-color: #27ae60; flex: 1;">Rejoin Match</button>
+                <button id="rejectRejoinBtn" class="btn btn-secondary" style="background-color: #c0392b; flex: 1;">Reject & Terminate</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    document.getElementById('acceptRejoinBtn').onclick = () => {
+        modal.remove();
+        currentMatchId = mId;
+        playerTeam = isBlue ? 'blue' : 'red';
+        localTeam = playerTeam;
+
+        // Clear AFK flag upon rejoining
+        const afkField = playerTeam === 'blue' ? 'blueAfk' : 'redAfk';
+        update(ref(db, `matches/${mId}`), { [afkField]: false });
+
+        // Find associated server if possible
+        findServerIdForMatch(mId, () => {
+            startGameSession();
+        });
+    };
+
+    document.getElementById('rejectRejoinBtn').onclick = () => {
+        modal.remove();
+        // Terminate match
+        update(ref(db, `matches/${mId}`), { status: 'ended', winner: isBlue ? 'red' : 'blue' });
+        loadServerList();
+        logToConsole("Rejected and terminated active match.");
+    };
+}
+
+function findServerIdForMatch(mId, callback) {
+    const serversRef = ref(db, 'servers');
+    get(serversRef).then((snapshot) => {
+        const servers = snapshot.val() || {};
+        for (let sId in servers) {
+            if (servers[sId].matchId === mId) {
+                currentServerId = sId;
+                break;
+            }
+        }
+        if (callback) callback();
+    });
+}
+
 // --- LOBBY & SERVER CREATION WITH ONGOING MATCH DISPLAY ---
 function createNewServer() {
     if (!currentUser) return;
+    isLeavingDeliberately = false;
     const serversRef = ref(db, 'servers');
     const newServerRef = push(serversRef);
     currentServerId = newServerRef.key;
@@ -270,6 +372,7 @@ function loadServerList() {
 
 window.joinServer = function(sId) {
     if (!currentUser) return;
+    isLeavingDeliberately = false;
     currentServerId = sId;
     const serverRef = ref(db, `servers/${sId}`);
 
@@ -289,7 +392,9 @@ window.joinServer = function(sId) {
             redUser: currentUser,
             turn: 'blue',
             status: 'active',
-            units: getInitialUnitsState()
+            units: getInitialUnitsState(),
+            blueAfk: false,
+            redAfk: false
         });
 
         update(serverRef, {
@@ -409,9 +514,38 @@ function startGameSession() {
     document.getElementById('statusBanner').innerText = "Match started! 18x18 Flipped Map initialized.";
     logToConsole(`Starting 18x18 game session as team: ${playerTeam}`);
 
+    // Ensure AFK button exists beside surrender button
+    ensureAfkButton();
+
     initCanvasGame();
     listenToMatchUpdates();
     listenToMatchChat();
+}
+
+function ensureAfkButton() {
+    const surrenderBtn = document.getElementById('surrenderBtn');
+    if (surrenderBtn && !document.getElementById('afkBtn')) {
+        const afkBtn = document.createElement('button');
+        afkBtn.id = 'afkBtn';
+        afkBtn.className = 'btn btn-secondary';
+        afkBtn.style.backgroundColor = '#f39c12';
+        afkBtn.style.color = '#fff';
+        afkBtn.style.marginLeft = '10px';
+        afkBtn.innerText = 'Go AFK';
+        afkBtn.onclick = () => {
+            if (currentMatchId) {
+                const afkField = playerTeam === 'blue' ? 'blueAfk' : 'redAfk';
+                update(ref(db, `matches/${currentMatchId}`), { [afkField]: true });
+            }
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            currentMatchId = null;
+            currentServerId = null;
+            showScreen('lobby-screen');
+            loadServerList();
+            logToConsole("Marked as AFK and returned to lobby.");
+        };
+        surrenderBtn.parentNode.insertBefore(afkBtn, surrenderBtn.nextSibling);
+    }
 }
 
 function initCanvasGame() {
@@ -539,8 +673,8 @@ function listenToMatchUpdates() {
         if (!match) return;
         units = match.units || units;
         
-        // Determine opponent username dynamically
         let opponentName = playerTeam === 'blue' ? (match.redUser || 'Opponent') : (match.blueUser || 'Opponent');
+        let opponentIsAfk = playerTeam === 'blue' ? match.redAfk : match.blueAfk;
 
         const banner = document.getElementById('statusBanner');
         if (match.status === 'ended') {
@@ -549,17 +683,22 @@ function listenToMatchUpdates() {
             
             if (!matchEndTimeout) {
                 matchEndTimeout = setTimeout(() => {
-                    leaveMatch();
+                    isLeavingDeliberately = true;
+                    leaveMatchCompletely();
                 }, 4000);
             }
         } else {
             const isMyTurn = match.turn === playerTeam;
-            banner.innerText = `VS ${opponentName} | Turn: ${match.turn.toUpperCase()} (${isMyTurn ? 'Your Turn' : `${opponentName}'s Turn`})`;
+            let statusText = `VS ${opponentName} | Turn: ${match.turn.toUpperCase()} (${isMyTurn ? 'Your Turn' : `${opponentName}'s Turn`})`;
+            if (opponentIsAfk) {
+                statusText += ` | [${opponentName} has gone AFK. They can rejoin once they get into the app again!]`;
+            }
+            banner.innerText = statusText;
         }
     });
 }
 
-function leaveMatch() {
+function leaveMatchCompletely() {
     if (animationFrameId) cancelAnimationFrame(animationFrameId);
     if (matchEndTimeout) {
         clearTimeout(matchEndTimeout);
@@ -575,7 +714,7 @@ function leaveMatch() {
     currentServerId = null;
     showScreen('lobby-screen');
     loadServerList();
-    logToConsole("Left match and returned to lobby.");
+    logToConsole("Left match and terminated completely.");
 }
 
 function listenToMatchChat() {
